@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+    
+    <head>
+        <meta charset="UTF-8">
+        <title>T.ace Tabs</title>
+        <style type="text/css" media="screen">
+            body {
+                overflow: hidden;
+                font-size:13px;
+            }
+            #editor {
+                margin: 0;
+                position: absolute;
+                top: 35px;
+                bottom: 200px;
+                left: 0;
+                right: 0;
+            }
+            #issues {
+                position: absolute;
+                bottom: 0;
+                left: 0;
+                right: 0;
+                height: 200px;
+                border: 1px solid black;
+                font-size:10px;
+            }
+        </style>
+    </head>
+    
+    <body>
+        <!-- styles from tern.codemirror demo with tabs -->
+        <style>
+            ul.tabs {
+              list-style: none;
+              margin: 0 0 -1px 0;
+              padding: 0 0 0 37px;
+              font-family: "Ubuntu Mono";
+              overflow: hidden;
+            }
+            ul.tabs li {
+              font-size: 11pt;
+              color: #777;
+              cursor: pointer;
+              margin: 0 2px 0 0;
+              padding: 2px 10px 5px;
+              border: 1px solid silver;
+              border-bottom-width: 0px;
+              background: #f3f3f3;
+              display: inline-block;
+              z-index: 1;
+              border-top-left-radius: 6px;
+              border-top-right-radius: 6px;
+              position: relative;
+            }
+            ul.tabs li:hover {
+              color: #444;
+            }
+            ul.tabs li.selected {
+              background: white;
+              color: #222;
+              z-index: 3;
+              cursor: default;
+            }
+            ul.tabs li:before,
+            ul.tabs li:after {
+              position: absolute;
+              bottom: 0;
+              width: 6px;
+              height: 6px;
+              content: " ";
+              border: 1px solid silver;
+            }
+            ul.tabs li:before {
+              left: -7px;
+              border-bottom-right-radius: 6px;
+              border-width: 0 1px 1px 0;
+              box-shadow: 2px 2px 0 #f3f3f3;
+            }
+            ul.tabs li:after {
+              right: -7px;
+              border-bottom-left-radius: 6px;
+              border-width: 0 0 1px 1px;
+              box-shadow: -2px 2px 0 #f3f3f3;
+            }
+            ul.tabs li.selected:before {
+              box-shadow: 2px 2px 0 white;
+            }
+            ul.tabs li.selected:after {
+              box-shadow: -2px 2px 0 white;
+            }
+            
+            #commands {
+              font-family: "Ubuntu Mono";
+              font-size: 11pt;
+              position: absolute;
+              right: 0;
+              top: 0;
+              max-width: 10em;
+            }
+        </style>
+        <ul class="tabs" id="docs"></ul>
+        <pre id="editor"></pre>
+        <div id="issues" style="overflow:auto;">
+            <select id="commands">
+                <option>commands...</option>
+                <option value=complete>Autocomplete (ctrl-space)</option>
+                <option value=jumptodef>Jump to definition (alt-.)</option>
+                <option value=findtype>Find type of (ctrl-i)</option>
+                <option value=rename>Rename variable (ctrl-q)</option>
+                <option value=addfile>Add a new file</option>
+                <option value=delfile>Remove this file</option>
+            </select>
+            <ol>
+                <li> jump to not working with require.js, but it is working between other tabs</li>
+                <li>May need to check if the correct type is passed to tern for 'doc', it should likely be a ace.editsession, right now it might be the entire ace eidtor.. I'm not sure</li>
+                <li>switch to doc works first time, but switch back to previous doesnt work</li>
+            </ol>
+            <h3>to do</h3>
+            <ol>
+                <li>Add doc change tracking- needs to add on change event to ac, update BuildRequest to check for changes, and update getFragmentAround</li>
+                <li>update langauge_tools to allow copmletion priority, which puts tern above local, and uncomment this line in language-tools: //var completers = [snippetCompleter, textCompleter, keyWordCompleter];</li>
+                <li>Add the ace tooltip styling in the javascript file (currently in the html file)</li>
+                <li>filtering via tern- need input read to fire filtering to tern</li>
+                <li>remove the filter proeprty in tern getCompletions request (it should already be filtered by ACE completor)- also remove scrap codes (duplicate filtered list)</li>
+            </ol>
+            <h3>Ace To CodeMirror</h3>
+            <ol>
+                <li>Doc
+                    <ul>
+                        <li>CM.getDoc() = contains document text, size, editor reference, history, mode, cursor, etc...</li>
+                        <li>Ace.getSession().getDocument() = contains document text... but not size, cursor, etc..</li>
+                    </ul>
+                </li>
+                <li>Cursor
+                    <ul>
+                        <li>CM.doc.getCusor()= {line,ch}</li>
+                        <li>Ace.getCursorPosistion() = {row,column}</li>
+                    </ul>
+                </li>
+                <li>number of rows
+                    <ul>
+                        <li>CM.doc.lineCount()</li>
+                        <li>Ace.session.getLength()</li>
+                    </ul>
+                </li>
+                <li>x
+                    <ul>
+                        <li>CM</li>
+                        <li>Ace</li>
+                    </ul>
+                </li>
+            </ol>
+        </div>
+        <script src="helpers.js"></script>
+        <script src="https://ajax.googleapis.com/ajax/libs/jquery/1.10.2/jquery.min.js" type="text/javascript"></script>
+        <script src="ace-builds/src-noconflict/ace.js"></script>
+        <script src="tabDemo.js"></script>
+        <div id="CurrentToken" style="color:blue; position:fixed; z-index:99; top:5px; right:5px; font-size:11px;"></div>
+        <pre style="display: none" id="requirejs_test_dep">
+define(function() {
+    return {
+        capitalize: function(word) {
+            return word.charAt(0).toUpperCase() + word.slice(1);
+        },
+        garble: function(word) {
+            return word.replace(/[auiyoe]/g, function() {
+                return "auiyoe".charAt(Math.floor(Math.random() * 6));
+            });
+        }
+    };
+});
+        </pre>
+    </body>
+
+</html>
