@@ -12,68 +12,82 @@
                 margin: 0;
                 position: absolute;
                 top: 0;
-                bottom: 200px;
+                bottom: 0;
+                right: 320px;
                 left: 0;
-                right: 0;
+                border-right:1px solid black;
             }
             #issues {
                 position: absolute;
-                bottom: 0;
-                left: 0;
-                right: 0;
-                height: 200px;
-                border: 1px solid black;
-                font-size:10px;
+                top:30px;
+                bottom: 10px;
+                right: 10px;
+                width:300px;
+                font-size:12px;
             }
+            .hotkeys td{
+                vertical-align: top;
+            }
+            .hotkeys tr td:nth-child(2){
+                padding-left:7px;
+            }
+            h3{
+                margin-top: 20px;
+                margin-bottom: 3px
+            };
         </style>
+        
     </head>
     
     <body>
         <pre id="editor"></pre>
         <div id="issues" style="overflow:auto;">
+            Mode:
             <select id="modeSelect" onchange="ChangeMode();">
                 <option>javascript</option>
                 <option>html</option>
             </select>
-            <ol>
-                <li>May need to check if the correct type is passed to tern for 'doc', it should likely be a ace.editsession, right now it might be the entire ace eidtor.. I'm not sure</li>
+            
+            <h3>Demo Hot Keys</h3>
+            <table class="hotkeys">
+                <tr style="font-weight:bold;">
+                    <td>Key</td>
+                    <td>Description</td>
+                </tr>
+                <tr>
+                    <td>Ctrl+Space</td>
+                    <td>Start Auto Complete (also trigger automtically after typing '.')</td>
+                </tr>
+                <tr>
+                    <td>Ctrl+I</td>
+                    <td>Show type</td>
+                </tr>
+                <tr>
+                    <td>Alt+.</td>
+                    <td>Jump to definition</td>
+                </tr>
+                <tr>
+                    <td>Alt+,</td>
+                    <td>Jump back</td>
+                </tr>
+                <tr>
+                    <td>Ctrl+E</td>
+                    <td>Find references (popup posistion has bug)</td>
+                </tr>
+                <tr>
+                    <td>Ctrl+Shift+E</td>
+                    <td>Rename (popup posistion has bug)</td>
+                </tr>
+            </table>
+            
+            <h3>Project Status</h3>
+            <ul>
+                <li>Under heavy development, not ready for prime time yet</li>
                 <li></li>
-            </ol>
-            <h3>to do</h3>
-            <ol>
-                <li>Add doc change tracking- needs to add on change event to ac, update BuildRequest to check for changes, and update getFragmentAround</li>
-                <li>update langauge_tools to allow copmletion priority, which puts tern above local, and uncomment this line in language-tools: //var completers = [snippetCompleter, textCompleter, keyWordCompleter];</li>
-                <li>Add the ace tooltip styling in the javascript file (currently in the html file)</li>
-                <li>filtering via tern- need input read to fire filtering to tern</li>
-                <li>remove the filter proeprty in tern getCompletions request (it should already be filtered by ACE completor)- also remove scrap codes (duplicate filtered list)</li>
-            </ol>
-            <h3>Ace To CodeMirror</h3>
-            <ol>
-                <li>Doc
-                    <ul>
-                        <li>CM.getDoc() = contains document text, size, editor reference, history, mode, cursor, etc...</li>
-                        <li>Ace.getSession().getDocument() = contains document text... but not size, cursor, etc..</li>
-                    </ul>
-                </li>
-                <li>Cursor
-                    <ul>
-                        <li>CM.doc.getCusor()= {line,ch}</li>
-                        <li>Ace.getCursorPosistion() = {row,column}</li>
-                    </ul>
-                </li>
-                <li>number of rows
-                    <ul>
-                        <li>CM.doc.lineCount()</li>
-                        <li>Ace.session.getLength()</li>
-                    </ul>
-                </li>
-                <li>x
-                    <ul>
-                        <li>CM</li>
-                        <li>Ace</li>
-                    </ul>
-                </li>
-            </ol>
+                <li></li>
+            </ul>
+            
+           
         </div>
         <script src="helpers.js"></script>
         <script src="https://ajax.googleapis.com/ajax/libs/jquery/1.10.2/jquery.min.js" type="text/javascript"></script>
