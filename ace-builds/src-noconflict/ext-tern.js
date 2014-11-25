@@ -161,7 +161,7 @@ function(require, exports, module) {
         debounce_ternShowType = setTimeout(function() {
             editor_for_OnCusorChange.ternServer.showType(editor_for_OnCusorChange, null, true); //show type
         }, 300);
-
+      
         editor_for_OnCusorChange.ternServer.updateArgHints(editor_for_OnCusorChange);
     };
 
@@ -1097,13 +1097,13 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
             }
             tip = createInfoDataTip(data, true);
     
-            //10ms timeout because jumping the cusor around alot often causes the reported cusor posistion to be the last posistion it was in instaed of its current posistion
+            //timeout because jumping the cusor around alot often causes the reported cusor posistion to be the last posistion it was in instaed of its current posistion
             setTimeout(function() {
                 var place = getCusorPosForTooltip(editor);
                 // console.log('place',place);
                 // setTimeout(function(){console.log('place after 1ms', getCusorPosForTooltip(editor));},1);
                 makeTooltip(place.left, place.top, tip, editor, true); //tempTooltip(editor, tip, -1); - was temp tooltip.. TODO: add temptooltip fn
-            }, 10);
+            }, 50);
         };
     
         ts.request(editor, "type", cb, pos, !calledFromCursorActivity, (calledFromCursorActivity ? 100 : null));
@@ -1841,15 +1841,13 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
      * @param {row,column} [pos] optionally pass this to check for call at a posistion other than current cursor posistion
      * @returns {undefined | (argpos,start(ch,line))} call pos object or undefined if not in call pos
      * 
-     * @issue: arg pos gets thrown off when using format where functions end with commas instead of semi colons as the end of one function may be scanned and its trailing commma will throw off the arg pos; Possible solutions: 1. Figure out how to ignore this comma; 2. Somehow check call pos without scanning all the previous lines (dont think this will work. would want to  use something like isOnFunctionCall without the first 3 checks )
+     * @note: takes about .01ms to complete on machine with Intel core i3 @ 2.6ghz in Chrome for windows 8
      */
     function getCallPos(editor, pos) {
         if (somethingIsSelected(editor)) return;
         if (!inJavascriptMode(editor)) return;
         
-        
         //#region setup
-        var d='';//debug
         var start = {}; //start of query to tern (start of the call location)
         var currentPosistion = pos || editor.getSelectionRange().start; //{row,column}
         currentPosistion = toAceLoc(currentPosistion); //just in case
@@ -1860,15 +1858,14 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
         var ch = '';
         //current depth of the call based on parenthesis
         var depth = 0;
-        //argument posistion
-        var argpos = 0;
+        //array of posistions where commas lie that could potentialy increment arg pos
+        var commas = [];
         //#endregion
         
         
         //#region iterate backwards through each row
         for (var row = currentLine; row >= firstLineToCheck; row--) {
             var thisRow = editor.session.getLine(row);
-            d+= '\n'+row+': '+thisRow.trim();
             if (row === currentLine) {
                 thisRow = thisRow.substr(0, currentCol);
             } 
@@ -1876,28 +1873,23 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
             //#region for current line, only get up to cursor posistion
             for (var col = thisRow.length; col >= 0; col--) {
                 ch = thisRow.substr(col, 1);
-                //d += '\t' + ch + '; ';
                 if (ch === '}' || ch === ')' || ch === ']') {
                     depth += 1;
-                    d += '\n' + ch + ': ' + 'depth+1';
                 }
                 else if (ch === '{' || ch === '(' || ch === '[') {
                     if (depth > 0) {
                         depth -= 1;
-                        d += '\n' + ch + ': ' + 'depth-1';
                     }
                     else if (ch === '(') {
                         //check before call start to make sure its not a function definition
                         var wordBeforeFnName = thisRow.substr(0, col).split(' ').reverse()[1];
                         if (wordBeforeFnName && wordBeforeFnName.toLowerCase() === 'function') {
-                            d += '\n' + ch + ': ' + 'break because fn definition';
                             break;
                         }
                         //Make sure this is not in a comment or start of a if statement
                         var token = editor.session.getTokenAt(row, col);
                         if (token) {
                             if (token.type.toString().indexOf('comment') !== -1 || token.type === 'keyword') {
-                                d += '\n' + ch + ': ' + 'break because comment or keyword';
                                 break;
                             }
                         }
@@ -1905,46 +1897,38 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
                             line: row,
                             ch: col
                         };
-                        d += '\n' + ch + ': ' + 'final break';
                         break;
                     }
                     else {
-                        d += '\n' + ch + ': ' + ' depth=0 & ch not (final break)';
                         break;
                     }
                 }
                 else if (ch === ',' && depth === 0) {
-                     var prev1 = col < 1? null :thisRow.substr(col-1,1);
-                     var prev2 = col < 2? null :thisRow.substr(col-2,1);
-                     if(prev1 === '}' || (prev1 === ' ' && prev2 === '}')){
-                         //added 11.2.2014 - appears to be working... but could break something else (needs more testing)
-                         //dont increment arg posistion
-                         //its likely that this row is the end of a function definition using notation where end of definition ends with comma isntead of semi-colon
-                         d += '\n' + ch + ': ' + ' (doing nothing because end is likely end of fn definition)';
-                     }
-                     else{
-                         argpos += 1;
-                         d += '\n' + ch + ': ' + 'argpos+1';
-                     }
+                    commas.push({line:row, ch:col});
                 }
             }
             //#endregion
             
         }
-        //console.log(d);//uncomment for debbuging
-        
         //#endregion
         
-        
-        //#region result
         if (!start.hasOwnProperty('line')) { //start not found
             return;
         }
+        
+        //get argument posistion inside of call by adding one for each comma that occurs after start pos
+        var argpos=0;
+        for (var i = 0; i < commas.length; i++) {
+            var p=commas[i];
+            if(p.line >= start.line && p.ch > start.ch){
+                argpos += 1;
+            }
+        }
+        
         return {
             start: toTernLoc(start),
             "argpos": argpos
         };
-        //#endregion
     }
     /**
      * Gets if editor is currently in call posistion
@@ -2725,7 +2709,7 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
 
     //#region CSS
     var dom = require("ace/lib/dom");
-    dom.importCssString(".Ace-Tern-tooltip { border: 1px solid silver; border-radius: 3px; color: #444; padding: 2px 5px; padding-right:15px; /*for close button*/ font-size: 90%; font-family: monospace; background-color: white; white-space: pre-wrap; max-width: 40em; max-height:60em; overflow-y:auto; position: absolute; z-index: 10; -webkit-box-shadow: 2px 3px 5px rgba(0, 0, 0, .2); -moz-box-shadow: 2px 3px 5px rgba(0, 0, 0, .2); box-shadow: 2px 3px 5px rgba(0, 0, 0, .2); transition: opacity 1s; -moz-transition: opacity 1s; -webkit-transition: opacity 1s; -o-transition: opacity 1s; -ms-transition: opacity 1s; } .Ace-Tern-tooltip-boxclose { position:absolute; top:0; right:3px; color:red; } .Ace-Tern-tooltip-boxclose:hover { background-color:yellow; } .Ace-Tern-tooltip-boxclose:before { content:'×'; cursor:pointer; font-weight:bold; font-size:larger; } .Ace-Tern-completion { padding-left: 12px; position: relative; } .Ace-Tern-completion:before { position: absolute; left: 0; bottom: 0; border-radius: 50%; font-weight: bold; height: 13px; width: 13px; font-size:11px; /*BYM*/ line-height: 14px; text-align: center; color: white; -moz-box-sizing: border-box; -webkit-box-sizing: border-box; box-sizing: border-box; } .Ace-Tern-completion-unknown:before { content:'?'; background: #4bb; } .Ace-Tern-completion-object:before { content:'O'; background: #77c; } .Ace-Tern-completion-fn:before { content:'F'; background: #7c7; } .Ace-Tern-completion-array:before { content:'A'; background: #c66; } .Ace-Tern-completion-number:before { content:'1'; background: #999; } .Ace-Tern-completion-string:before { content:'S'; background: #999; } .Ace-Tern-completion-bool:before { content:'B'; background: #999; } .Ace-Tern-completion-guess { color: #999; } .Ace-Tern-hint-doc { max-width: 35em; } .Ace-Tern-fhint-guess { opacity: .7; } .Ace-Tern-fname { color: black; } .Ace-Tern-farg { color: #70a; } .Ace-Tern-farg-current { color: #70a; font-weight:bold; font-size:larger; } .Ace-Tern-farg-current-description { font-style:italic; margin-top:2px; color:grey; } .Ace-Tern-farg-current-name { font-weight:bold; } .Ace-Tern-type { color: #07c; font-size:smaller; } .Ace-Tern-jsdoc-tag { color: #B93A38; text-transform: lowercase; font-size:smaller; font-weight:600; } .Ace-Tern-jsdoc-param-wrapper{ /*background-color: #FFFFE3; padding:3px;*/ } .Ace-Tern-jsdoc-tag-param-child{ display:inline-block; width:0px; } .Ace-Tern-jsdoc-param-optionalWrapper { font-style:italic; } .Ace-Tern-jsdoc-param-optionalBracket { color:grey; font-weight:bold; } .Ace-Tern-jsdoc-param-name { color: #70a; font-weight:bold; } .Ace-Tern-jsdoc-param-defaultValue { color:grey; } .Ace-Tern-jsdoc-param-description { color:black; } .Ace-Tern-typeHeader-simple{ font-size:smaller; font-weight:bold; display:block; font-style:italic; margin-bottom:3px; color:grey; } .Ace-Tern-typeHeader{ display:block; font-style:italic; margin-bottom:3px; } ");
+    dom.importCssString(".Ace-Tern-tooltip { border: 1px solid silver; border-radius: 3px; color: #444; padding: 2px 5px; padding-right:15px; /*for close button*/ font-size: 90%; font-family: monospace; background-color: white; white-space: pre-wrap; max-width: 40em; max-height:60em; overflow-y:auto; position: absolute; z-index: 10; -webkit-box-shadow: 2px 3px 5px rgba(0, 0, 0, .2); -moz-box-shadow: 2px 3px 5px rgba(0, 0, 0, .2); box-shadow: 2px 3px 5px rgba(0, 0, 0, .2); transition: opacity 1s; -moz-transition: opacity 1s; -webkit-transition: opacity 1s; -o-transition: opacity 1s; -ms-transition: opacity 1s; } .Ace-Tern-tooltip-boxclose { position:absolute; top:0; right:3px; color:red; } .Ace-Tern-tooltip-boxclose:hover { background-color:yellow; } .Ace-Tern-tooltip-boxclose:before { content:'×'; cursor:pointer; font-weight:bold; font-size:larger; } .Ace-Tern-completion { padding-left: 12px; position: relative; } .Ace-Tern-completion:before { position: absolute; left: 0; bottom: 0; border-radius: 50%; font-weight: bold; height: 13px; width: 13px; font-size:11px; /*BYM*/ line-height: 14px; text-align: center; color: white; -moz-box-sizing: border-box; -webkit-box-sizing: border-box; box-sizing: border-box; } .Ace-Tern-completion-unknown:before { content:'?'; background: #4bb; } .Ace-Tern-completion-object:before { content:'O'; background: #77c; } .Ace-Tern-completion-fn:before { content:'F'; background: #7c7; } .Ace-Tern-completion-array:before { content:'A'; background: #c66; } .Ace-Tern-completion-number:before { content:'1'; background: #999; } .Ace-Tern-completion-string:before { content:'S'; background: #999; } .Ace-Tern-completion-bool:before { content:'B'; background: #999; } .Ace-Tern-completion-guess { color: #999; } .Ace-Tern-hint-doc { max-width: 35em; } .Ace-Tern-fhint-guess { opacity: .7; } .Ace-Tern-fname { color: black; } .Ace-Tern-farg { color: #70a; } .Ace-Tern-farg-current { color: #70a; font-weight:bold; font-size:larger; text-decoration:underline; } .Ace-Tern-farg-current-description { font-style:italic; margin-top:2px; color:grey; } .Ace-Tern-farg-current-name { font-weight:bold; } .Ace-Tern-type { color: #07c; font-size:smaller; } .Ace-Tern-jsdoc-tag { color: #B93A38; text-transform: lowercase; font-size:smaller; font-weight:600; } .Ace-Tern-jsdoc-param-wrapper{ /*background-color: #FFFFE3; padding:3px;*/ } .Ace-Tern-jsdoc-tag-param-child{ display:inline-block; width:0px; } .Ace-Tern-jsdoc-param-optionalWrapper { font-style:italic; } .Ace-Tern-jsdoc-param-optionalBracket { color:grey; font-weight:bold; } .Ace-Tern-jsdoc-param-name { color: #70a; font-weight:bold; } .Ace-Tern-jsdoc-param-defaultValue { color:grey; } .Ace-Tern-jsdoc-param-description { color:black; } .Ace-Tern-typeHeader-simple{ font-size:smaller; font-weight:bold; display:block; font-style:italic; margin-bottom:3px; color:grey; } .Ace-Tern-typeHeader{ display:block; font-style:italic; margin-bottom:3px; } ");
     //override the autocomplete width (ghetto)-- need to make this an option
     dom.importCssString(".ace_autocomplete {width: 400px !important;}");
     //#endregion
