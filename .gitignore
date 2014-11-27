@@ -1,3 +1,5 @@
 /Tern.ace.xdk
 /Tern.ace.xdke
 /reference
+_site
+node_modules
