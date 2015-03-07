@@ -113,15 +113,6 @@
 
         -->
         <script>
-            console.info('left off-- use worker works but currently off because its super slow. Need to get editor change to refilter list on tern  (need the tern doc change tracking) \n\n Arg hints is kind of working. Need to revise the function that determines if we are in the correct place to show arg hints and figure out which argument is currently being typed (based on commas)');
-            // throw new Error('Left off: need to make it find parent for update arg hitns and need to make sure it doesnt work when in function definition. Combine the tokens with the string parsing to get this!');
-            console.info('need to do pull request for ext-language_tools.js: //need this line of code to add icon in popup from tern if (data.iconClass) {tokens.push({ type: data.iconClass, value:" " });}');
-
-            console.info('left off: need to finish tern aceCommand binding, and add unbindAceKeys when tern is turned off');
-            
-            console.info('fix session.getLength in track change');
-            console.info('would be nice if arg hints worked inside of object but not likely to work..');
-
             var editor = ace.edit("editor");
             editor.setValue(modeDocs.javascript);
             editor.setTheme("ace/theme/chrome");

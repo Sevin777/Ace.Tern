@@ -1936,6 +1936,8 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
                         depth -= 1;
                     }
                     else if (ch === '(') {
+                        //#region ensure before start of paren is function call
+                        
                         //set to true to log info about potential function calls
                         var debugFnCall = false;
 
@@ -1999,9 +2001,7 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
         }
         //#endregion
 
-        if (!start.hasOwnProperty('line')) { //start not found
-            return;
-        }
+        if (!start.hasOwnProperty('line')) return; //start not found
 
         //get argument posistion inside of call by adding one for each comma that occurs after start pos
         var argpos = 0;
