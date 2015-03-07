@@ -1,14 +1,8 @@
 ///(10.4.2014) * [TODO:translateToSession] - add this tag to methods that need translating to use session instead of editor
-/*jshint maxerr:10000 */
-
+/*jshint maxerr:10000, eqnull:true */
 /**
  * Ace Tern server configuration (uses worker in separate file)
- *
- * TODO:
- * - make enable/disable tern server via ace config and expose the server as public exports
- * - auto init the server and disable it when its not needed
  */
-
 
 ace.define('ace/ext/tern', ['require', 'exports', 'module', 'ace/snippets', 'ace/autocomplete', 'ace/config', 'ace/editor'],
 
