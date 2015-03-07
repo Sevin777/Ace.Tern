@@ -2007,7 +2007,7 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
         var argpos = 0;
         for (var i = 0; i < commas.length; i++) {
             var p = commas[i];
-            if (p.line >= start.line && p.ch > start.ch) {
+            if ((p.line === start.line && p.ch > start.ch) || (p.line > start.line)) {
                 argpos += 1;
             }
         }
