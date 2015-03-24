@@ -508,6 +508,7 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
         },
         /**
          * Sends request to tern server
+         * @param {function} c - callback(error,data)
          * @param {bool} [forcePushChangedfile=false] - hack, force push large file change
          * @param {int} [timeout=1000] - timeout for the query
          */
@@ -2029,12 +2030,12 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
      * NOTE: did performance testing and found that scanning for callstart takes less than 1ms
      */
     function updateArgHints(ts, editor) {
+        clearTimeout(debounce_updateArgHints);
+        closeArgHints(ts);
         var callPos = getCallPos(editor);
         if (!callPos) {
-            closeArgHints(ts);
             return;
         }
-        closeArgHints(ts);
         var start = callPos.start;
         var argpos = callPos.argpos;
 
@@ -2045,8 +2046,7 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
         }
         
         //large debounce when having to get new arg hints as its expensive and moving cursor around rapidly can hit this alot
-        clearTimeout(debounce_updateArgHints);
-        debounce_updateArgHints = setTimeout(inner, 300);
+        debounce_updateArgHints = setTimeout(inner, 500);
         
         //still going: get arg hints from server
         function inner(){
