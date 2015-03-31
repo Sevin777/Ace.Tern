@@ -125,7 +125,9 @@ function(require, exports, module) {
     var ternOptions = {
         defs: ['jquery', 'browser', 'ecma5'],
         plugins: {
-            doc_comment: true,
+            doc_comment: {
+                fullDocs: true
+            },
             /*requirejs: {
                 "baseURL": "./",
                 "paths": {}
