@@ -2671,6 +2671,13 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
             //console.log('tern not enabled at current location, not adding vs refs');
             return;
         }
+        //rather rudimentry browser test... should work but not tested enough. Needs to only be true if a real browser, not node, nodewebkit, or chrome app
+        //chrome app location starts with: chrome-extension
+        //nodewebkit location starts with: file://
+        //node shouldnt have window.location (i think?)
+        //note that this wont work if running from local file
+        var isBrowser = window && window.location && window.location.toString().toLowerCase().indexOf('http') === 0;
+        
         var StringtoCheck = "";
         for (var i = 0; i < editor.session.getLength(); i++) {
             var thisLine = editor.session.getLine(i);
@@ -2704,15 +2711,15 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
         //reads file and adds to tern
         var ReadFile_AddToTern = function(path) {
             try {
-                //console.log('add ref. name=' + name + '; path=' + path);
-                if (path.toLowerCase().indexOf("http") !== -1) {
+                var isFullUrl = path.toLowerCase().indexOf("http") === 0;
+                if (isFullUrl || isBrowser) {
+                    //note: isBrowser and notFull url should be a relative url
                     var xhr = new XMLHttpRequest();
                     xhr.open("get", path, true);
                     xhr.send();
                     xhr.onreadystatechange = function() {
                         if (xhr.readyState == 4) {
                             console.log('adding web reference: ' + path);
-                            // alert('adding web reference: ' + path);
                             editor.ternServer.addDoc(path.replace(/^.*[\\\/]/, ''), xhr.responseText);
                         }
                     };
