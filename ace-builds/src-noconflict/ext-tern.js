@@ -127,11 +127,7 @@ function(require, exports, module) {
         plugins: {
             doc_comment: {
                 fullDocs: true
-            },
-            /*requirejs: {
-                "baseURL": "./",
-                "paths": {}
-            },*/
+            }
         },
         workerScript: config.moduleUrl('worker/tern'),
         useWorker: true,
@@ -151,7 +147,7 @@ function(require, exports, module) {
     var editor_for_OnCusorChange = null;
 
     //3.6.2015: debounce arg hints as it can be quite slow in very large files
-     var debounceArgHints;
+    var debounceArgHints;
     //show arguments hints when cursor is moved
     var onCursorChange_Tern = function(e, editor_getSession_selection) {
         clearTimeout(debounceArgHints);
@@ -178,13 +174,10 @@ function(require, exports, module) {
             }
         }
     };
-    //minimum string length for tern local string completions. set to -1 to disable this
-    var ternLocalStringMinLength = 3;
-
 
     completers.push(aceTs);
     exports.server = aceTs;
-    
+
     var Editor = require("../editor").Editor;
     config.defineOptions(Editor.prototype, "editor", {
         enableTern: {
@@ -199,15 +192,11 @@ function(require, exports, module) {
                     val = true;
                 }
                 if (val) {
+                    editor_for_OnCusorChange = this; //hack
                     createTernServer();
-                    //set default ternLocalStringMinLength
-                    if (this.getOption('ternLocalStringMinLength') === undefined) {
-                        this.setOption('ternLocalStringMinLength', ternLocalStringMinLength);
-                    }
                     this.completers = completers;
                     this.ternServer = aceTs;
                     this.commands.addCommand(Autocomplete.startCommand);
-                    editor_for_OnCusorChange = this; //hack
                     this.getSession().selection.on('changeCursor', onCursorChange_Tern);
                     this.commands.on('afterExec', onAfterExec_Tern);
                     aceTs.bindAceKeys(this);
@@ -220,12 +209,6 @@ function(require, exports, module) {
                         this.commands.removeCommand(Autocomplete.startCommand);
                     }
                 }
-            },
-            value: false
-        },
-        ternLocalStringMinLength: {
-            set: function(val) {
-                ternLocalStringMinLength = parseInt(val, 10);
             },
             value: false
         },
@@ -266,8 +249,8 @@ function(require, exports, module) {
  */
 ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function(require, exports, module) {
 
-    //#region TernServerPublic
 
+    //#region TernServerPublic
     /**
      * Tern Server Constructor {@link http://ternjs.net/doc/manual.html}
      * @param {object} options - Options for server
@@ -323,10 +306,15 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
          * used to include all completions if fired twice in one second
          */
         this.lastAutoCompleteFireTime = null;
+        /**
+         * {number} for tern queries: When the timeout field is set, it should contain a number, which is interpreted as the maximum amount of milliseconds to work (CPU work, ignoring I/O) on this request before returning with a timeout error.
+         */
+        this.queryTimeout = 3000;
+        if (this.options.queryTimeout && !isNaN(parseInt(this.options.queryTimeout))) this.queryTimeout = parseInt(this.options.queryTimeout);
     };
+    
 
     //#region helpers
-
     /**
      * returns line,ch posistion
      */
@@ -384,8 +372,8 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
     };
     /** @type {bool} set to true log info about completions */
     var debugCompletions = false;
-
     //#endregion
+
 
     TernServer.prototype = {
         bindAceKeys: function(editor) {
@@ -512,12 +500,11 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
          * Sends request to tern server
          * @param {function} c - callback(error,data)
          * @param {bool} [forcePushChangedfile=false] - hack, force push large file change
-         * @param {int} [timeout=1000] - timeout for the query
          */
-        request: function(editor, query, c, pos, forcePushChangedfile, timeout) {
+        request: function(editor, query, c, pos, forcePushChangedfile) {
             var self = this;
             var doc = findDoc(this, editor);
-            var request = buildRequest(this, doc, query, pos, forcePushChangedfile, timeout);
+            var request = buildRequest(this, doc, query, pos, forcePushChangedfile);
 
             this.server.request(request, function(error, data) {
                 if (!error && self.options.responseFilter) data = self.options.responseFilter(doc, query, request, error, data);
@@ -595,14 +582,11 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
             else debugCompletions = false;
         },
     };
-
     exports.TernServer = TernServer;
-
     //#endregion
 
 
     //#region TernServerPrivate
-
     /**
      * Resolves file path if options.resolveFilePath function is set;
      * This is needed for ChromeApp as relative paths are weight with the Chrome file system api;
@@ -676,9 +660,8 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
      * Build request to tern server
      * @param {TernDoc} doc - {doc: AceEditor, name: name of document, changed: {from:int, to:int}}
      * @param {bool} [forcePushChangedfile=false] - hack, force push large file change
-     * @param {int} [timeout=1000] - timeout for the query
      */
-    function buildRequest(ts, doc, query, pos, forcePushChangedfile, timeout) {
+    function buildRequest(ts, doc, query, pos, forcePushChangedfile) {
         /*
          * the doc passed here is {changed:null, doc:Editor, name: "[doc]"}
          * not the same as editor.getSession().getDocument() which is: {$lines: array}  (the actual document content
@@ -751,7 +734,7 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
         return {
             query: query,
             files: files,
-            timeout: timeout || 1000
+            timeout: ts.queryTimeout
         };
     }
     /**
@@ -963,44 +946,7 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
                 //console.log('textCompletions',textCompletions); console.log('otherCompletions',otherCompletions);
                 if (debugCompletions) console.timeEnd('aceTextCompletor');
             }
-            else {
-                if (debugCompletions) console.time('tern local string completions');
-                //add local string completions if enabled, this is far more useful than the local text completions
-                // gets string tokens that have no spaces or quotes that are longer than min length, tested on 5,000 line doc and takes about ~10ms
-                var ternLocalStringMinLength = editor.getOption('ternLocalStringMinLength');
-                if (ternLocalStringMinLength > 0) {
-                    for (var i = 0; i < editor.session.getLength(); i++) {
-                        var tokens = editor.session.getTokens(i);
-                        for (var n = 0; n < tokens.length; n++) {
-                            var t = tokens[n];
-                            if (t.type === 'string') {
-                                var val = t.value.toString().substr(1, t.value.length - 2).trim(); //remove first and last quotes
-                                if (val.length >= ternLocalStringMinLength && val.indexOf(' ') === -1 && val.indexOf('\'') === -1 && val.indexOf('"') === -1) {
-                                    var isDuplicate = false;
-                                    if (otherCompletions.length > 0) {
-                                        for (var x = 0; x < otherCompletions.length; x++) {
-                                            if (otherCompletions[x].value.toString() === val) {
-                                                isDuplicate = true;
-                                                break;
-                                            }
-                                        }
-                                    }
-                                    if (!isDuplicate) {
-                                        otherCompletions.push({
-                                            meta: 'localString',
-                                            name: val,
-                                            value: val,
-                                            score: -1
-                                        });
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                if (debugCompletions) console.timeEnd('tern local string completions');
-            }
-
+            
             //now merge other completions with tern (tern has priority)
             //tested on 5,000 line doc with all other completions and takes about ~10ms
             if (otherCompletions.length > 0) {
@@ -1154,7 +1100,7 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
             }, 10);
         };
 
-        ts.request(editor, "type", cb, pos, !calledFromCursorActivity, (calledFromCursorActivity ? 100 : null));
+        ts.request(editor, "type", cb, pos, !calledFromCursorActivity);
     }
     /**
      * @returns {element} for tooltip from data
@@ -1934,7 +1880,7 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
                     }
                     else if (ch === '(') {
                         //#region ensure before start of paren is function call
-                        
+
                         //set to true to log info about potential function calls
                         var debugFnCall = false;
 
@@ -2025,8 +1971,8 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
         }
         return false;
     }
-    
-    var debounce_updateArgHints=null;
+
+    var debounce_updateArgHints = null;
     /**
      * If editor is currently inside of a function call, this will try to get definition of the function that is being called, if successfull will show tooltip about arguments for the function being called.
      * NOTE: did performance testing and found that scanning for callstart takes less than 1ms
@@ -2046,12 +1992,12 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
         if (cache && cache.doc == editor && cmpPos(start, cache.start) === 0) {
             return showArgHints(ts, editor, argpos);
         }
-        
+
         //large debounce when having to get new arg hints as its expensive and moving cursor around rapidly can hit this alot
         debounce_updateArgHints = setTimeout(inner, 500);
-        
+
         //still going: get arg hints from server
-        function inner(){
+        function inner() {
             ts.request(editor, {
                 type: "type",
                 preferFunction: true,
@@ -2242,14 +2188,14 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
     /**
      * Creates tooltip at current cusor location;
      * tooltip will auto close on cursor activity;
-     * @param {int} [int_timeout=3000] - pass fadeout time, or -1 to not fade out
+     * @param {int} [timeout=3000] - pass fadeout time, or -1 to not fade out
      */
-    function tempTooltip(editor, content, int_timeout) {
-        if (!int_timeout) {
-            int_timeout = 3000;
+    function tempTooltip(editor, content, timeout) {
+        if (!timeout) {
+            timeout = 3000;
         }
         var location = getCusorPosForTooltip(editor);
-        return makeTooltip(location.left, location.top, content, editor, true, int_timeout);
+        return makeTooltip(location.left, location.top, content, editor, true, timeout);
     }
     /**
      * Makes a tooltip to show extra info in the editor
@@ -2341,18 +2287,18 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
     /**
      * Fades tooltip out
      */
-    function fadeOut(tooltip, int_timeout) {
-        if (!int_timeout) {
-            int_timeout = 1100;
+    function fadeOut(tooltip, timeout) {
+        if (!timeout) {
+            timeout = 1100;
         }
-        if (int_timeout === -1) {
+        if (timeout === -1) {
             remove(tooltip);
             return;
         }
         tooltip.style.opacity = "0";
         setTimeout(function() {
             remove(tooltip);
-        }, int_timeout);
+        }, timeout);
     }
     /**
      * Shows error
@@ -2679,7 +2625,7 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
         //node shouldnt have window.location (i think?)
         //note that this wont work if running from local file
         var isBrowser = window && window.location && window.location.toString().toLowerCase().indexOf('http') === 0;
-        
+
         var StringtoCheck = "";
         for (var i = 0; i < editor.session.getLength(); i++) {
             var thisLine = editor.session.getLine(i);
@@ -2859,10 +2805,10 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
 
     //#region CSS
     var dom = require("ace/lib/dom");
-    dom.importCssString(".Ace-Tern-tooltip { border: 1px solid silver; border-radius: 3px; color: #444; padding: 2px 5px; padding-right:15px; /*for close button*/ font-size: 90%; font-family: monospace; background-color: white; white-space: pre-wrap; max-width: 50em; max-height:30em; overflow-y:auto; position: absolute; z-index: 10; -webkit-box-shadow: 2px 3px 5px rgba(0, 0, 0, .2); -moz-box-shadow: 2px 3px 5px rgba(0, 0, 0, .2); box-shadow: 2px 3px 5px rgba(0, 0, 0, .2); transition: opacity 1s; -moz-transition: opacity 1s; -webkit-transition: opacity 1s; -o-transition: opacity 1s; -ms-transition: opacity 1s; } .Ace-Tern-tooltip-boxclose { position:absolute; top:0; right:3px; color:red; } .Ace-Tern-tooltip-boxclose:hover { background-color:yellow; } .Ace-Tern-tooltip-boxclose:before { content:'×'; cursor:pointer; font-weight:bold; font-size:larger; } .Ace-Tern-completion { padding-left: 12px; position: relative; } .Ace-Tern-completion:before { position: absolute; left: 0; bottom: 0; border-radius: 50%; font-weight: bold; height: 13px; width: 13px; font-size:11px; /*BYM*/ line-height: 14px; text-align: center; color: white; -moz-box-sizing: border-box; -webkit-box-sizing: border-box; box-sizing: border-box; } .Ace-Tern-completion-unknown:before { content:'?'; background: #4bb; } .Ace-Tern-completion-object:before { content:'O'; background: #77c; } .Ace-Tern-completion-fn:before { content:'F'; background: #7c7; } .Ace-Tern-completion-array:before { content:'A'; background: #c66; } .Ace-Tern-completion-number:before { content:'1'; background: #999; } .Ace-Tern-completion-string:before { content:'S'; background: #999; } .Ace-Tern-completion-bool:before { content:'B'; background: #999; } .Ace-Tern-completion-guess { color: #999; } .Ace-Tern-hint-doc { max-width: 35em; } .Ace-Tern-fhint-guess { opacity: .7; } .Ace-Tern-fname { color: black; } .Ace-Tern-farg { color: #70a; } .Ace-Tern-farg-current { color: #70a; font-weight:bold; font-size:larger; text-decoration:underline; } .Ace-Tern-farg-current-description { font-style:italic; margin-top:2px; color:black; } .Ace-Tern-farg-current-name { font-weight:bold; } .Ace-Tern-type { color: #07c; font-size:smaller; } .Ace-Tern-jsdoc-tag { color: #B93A38; text-transform: lowercase; font-size:smaller; font-weight:600; } .Ace-Tern-jsdoc-param-wrapper{ /*background-color: #FFFFE3; padding:3px;*/ } .Ace-Tern-jsdoc-tag-param-child{ display:inline-block; width:0px; } .Ace-Tern-jsdoc-param-optionalWrapper { font-style:italic; } .Ace-Tern-jsdoc-param-optionalBracket { color:grey; font-weight:bold; } .Ace-Tern-jsdoc-param-name { color: #70a; font-weight:bold; } .Ace-Tern-jsdoc-param-defaultValue { color:grey; } .Ace-Tern-jsdoc-param-description { color:black; } .Ace-Tern-typeHeader-simple{ font-size:smaller; font-weight:bold; display:block; font-style:italic; margin-bottom:3px; color:grey; } .Ace-Tern-typeHeader{ display:block; font-style:italic; margin-bottom:3px; } .Ace-Tern-tooltip-link{font-size:smaller; color:blue;}","ace_tern");
-    //override the autocomplete width (ghetto)-- need to make this an option
-    dom.importCssString(".ace_autocomplete {width: 400px !important;}","ace_tern_caret");
-    //FOR CARET ONLY-- override css above as carets default font size is stupid small
+    dom.importCssString(".Ace-Tern-tooltip { border: 1px solid silver; border-radius: 3px; color: #444; padding: 2px 5px; padding-right:15px; /*for close button*/ font-size: 90%; font-family: monospace; background-color: white; white-space: pre-wrap; max-width: 50em; max-height:30em; overflow-y:auto; position: absolute; z-index: 10; -webkit-box-shadow: 2px 3px 5px rgba(0, 0, 0, .2); -moz-box-shadow: 2px 3px 5px rgba(0, 0, 0, .2); box-shadow: 2px 3px 5px rgba(0, 0, 0, .2); transition: opacity 1s; -moz-transition: opacity 1s; -webkit-transition: opacity 1s; -o-transition: opacity 1s; -ms-transition: opacity 1s; } .Ace-Tern-tooltip-boxclose { position:absolute; top:0; right:3px; color:red; } .Ace-Tern-tooltip-boxclose:hover { background-color:yellow; } .Ace-Tern-tooltip-boxclose:before { content:'×'; cursor:pointer; font-weight:bold; font-size:larger; } .Ace-Tern-completion { padding-left: 12px; position: relative; } .Ace-Tern-completion:before { position: absolute; left: 0; bottom: 0; border-radius: 50%; font-weight: bold; height: 13px; width: 13px; font-size:11px; /*BYM*/ line-height: 14px; text-align: center; color: white; -moz-box-sizing: border-box; -webkit-box-sizing: border-box; box-sizing: border-box; } .Ace-Tern-completion-unknown:before { content:'?'; background: #4bb; } .Ace-Tern-completion-object:before { content:'O'; background: #77c; } .Ace-Tern-completion-fn:before { content:'F'; background: #7c7; } .Ace-Tern-completion-array:before { content:'A'; background: #c66; } .Ace-Tern-completion-number:before { content:'1'; background: #999; } .Ace-Tern-completion-string:before { content:'S'; background: #999; } .Ace-Tern-completion-bool:before { content:'B'; background: #999; } .Ace-Tern-completion-guess { color: #999; } .Ace-Tern-hint-doc { max-width: 35em; } .Ace-Tern-fhint-guess { opacity: .7; } .Ace-Tern-fname { color: black; } .Ace-Tern-farg { color: #70a; } .Ace-Tern-farg-current { color: #70a; font-weight:bold; font-size:larger; text-decoration:underline; } .Ace-Tern-farg-current-description { font-style:italic; margin-top:2px; color:black; } .Ace-Tern-farg-current-name { font-weight:bold; } .Ace-Tern-type { color: #07c; font-size:smaller; } .Ace-Tern-jsdoc-tag { color: #B93A38; text-transform: lowercase; font-size:smaller; font-weight:600; } .Ace-Tern-jsdoc-param-wrapper{ /*background-color: #FFFFE3; padding:3px;*/ } .Ace-Tern-jsdoc-tag-param-child{ display:inline-block; width:0px; } .Ace-Tern-jsdoc-param-optionalWrapper { font-style:italic; } .Ace-Tern-jsdoc-param-optionalBracket { color:grey; font-weight:bold; } .Ace-Tern-jsdoc-param-name { color: #70a; font-weight:bold; } .Ace-Tern-jsdoc-param-defaultValue { color:grey; } .Ace-Tern-jsdoc-param-description { color:black; } .Ace-Tern-typeHeader-simple{ font-size:smaller; font-weight:bold; display:block; font-style:italic; margin-bottom:3px; color:grey; } .Ace-Tern-typeHeader{ display:block; font-style:italic; margin-bottom:3px; } .Ace-Tern-tooltip-link{font-size:smaller; color:blue;} .ace_autocomplete {width: 400px !important;}", "ace_tern");
     //#endregion
-
+    
+    
+    //#endregion
+    
 });
