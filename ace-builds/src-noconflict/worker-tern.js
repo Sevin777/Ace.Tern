@@ -1,4 +1,4 @@
-﻿/** Tern web worker, which is used by default
+/** Tern web worker, which is used by default
  * This file also contains all files that are needed for the web worker to run (the server can load files on demand, but its messy to have all these files for once peice of ace functionality) *
  *
  *
@@ -18,25 +18,42 @@
 /*jshint maxerr:10000 */
 
 
-//#region hack - for caret Chrome App only
-//chrome  app must run in 'sandbox' due to use of new Function and eval in acorn and tern
-/*var parentSource = null;
-var parentOrigin = null;
-window.addEventListener('message', function (event) {
-    if (parentSource === null) {
-        parentSource = event.source;
-        parentOrigin = event.origin;
-    }
-    onmessage(event);
-});
-function postMessage(message) {
-    parentSource.postMessage(message, parentOrigin);
-}*/
-//#endregion
+/**
+ * this file used in web worker or normal javascript execution
+ */
+var isWorker = typeof window === 'undefined';
 
+/**
+ * this plugin is used in Caret-T chrome app.
+ * tern can't run in a chrome app due to content security policy that disallows eval (which tern uses).
+ * this code allows tern to work in chrome app using sandboxed iframe, so this worker file is not acutally
+ * a worker in the chrome app.
+ * 
+ * This code is irrelevant for normal usage, set isChromeApp to false when not using in Caret-T chromeApp.
+ *
+ */
+var isChromeApp = false;
 
+if (isChromeApp) {
+    var parentSource = null,
+        parentOrigin = null;
 
-if (typeof window === 'undefined') {
+    window.addEventListener('message', function(event) {
+        if (parentSource === null) {
+            parentSource = event.source;
+            parentOrigin = event.origin;
+        }
+        onmessage(event);
+    });
+
+    window.postMessage = function(message) {
+        parentSource.postMessage(message, parentOrigin);
+    };
+}
+
+if (isWorker || isChromeApp) {
+    if (isChromeApp) self = window;
+    
     var server, nextId = 0,
         pending = {};
 
@@ -45,7 +62,13 @@ if (typeof window === 'undefined') {
         var data = e.data;
         switch (data.type) {
         case "init":
-            __hack_setDefs(data);
+            if (data.defs && data.defs.length > 0) {
+                var tmp = [];
+                for (var i = 0; i < data.defs.length; i++) {
+                    tmp.push(getDefFromName(data.defs[i]));
+                }
+                data.defs = tmp;
+            }
             return startServer(data.defs, data.plugins, data.scripts);
         case "add":
             return server.addFile(data.name, data.text);
@@ -72,16 +95,6 @@ if (typeof window === 'undefined') {
         default:
             throw new Error("Unknown message type: " + data.type);
         }
-        
-        function __hack_setDefs(data) {
-            if (data && data.defs && data.defs.length > 0) {
-                var tmp = [];
-                for (var i = 0; i < data.defs.length; i++) {
-                    tmp.push(getDefFromName(data.defs[i]));
-                }
-                data.defs = tmp;
-            }
-        }
 
         //Added for ace- sets defs as setting them on load is not ideal due to structure and the defs are stored in the worker file
         function setDefs(defs) {
@@ -104,7 +117,15 @@ if (typeof window === 'undefined') {
 
         //(hack)- gets def from name at the bottom of this file (jquery,ecma5,browser,underscore)
         function getDefFromName(name) {
-            return eval('def_' + name);
+            try {
+                if (typeof name !== 'string') return name;
+                return eval('def_' + name);
+            }
+            catch (ex) {
+                if (isWorker) console.log('error getting tern def (definition file) from name: ' + name);
+                else console.log('error getting tern def (definition file) from name: ', name, ex);
+                throw (ex);
+            }
         }
 
         //(hack)- do something with debug messages
@@ -151,7 +172,7 @@ if (typeof window === 'undefined') {
         });
     };
 
-    self.console = {
+    if (!self.console) self.console = {
         log: function(v) {
             postMessage({
                 type: "debug",
