@@ -210,6 +210,7 @@ ace.define('ace/ext/tern', ['require', 'exports', 'module', 'ace/snippets', 'ace
                         self.commands.addCommand(Autocomplete.startCommand);
                         self.getSession().selection.on('changeCursor', onCursorChange_Tern);
                         self.commands.on('afterExec', onAfterExec_Tern);
+                        aceTs.bindAceKeys(self);
                         //becasue this may be async, we provide callback as option
                         if (ternOptions.startedCb) ternOptions.startedCb();
                     });
