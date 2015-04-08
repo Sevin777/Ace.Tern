@@ -3,9 +3,7 @@
 /**
  * Ace Tern server configuration (uses worker in separate file)
  */
-ace.define('ace/ext/tern', ['require', 'exports', 'module', 'ace/snippets', 'ace/autocomplete', 'ace/config', 'ace/editor'],
-
-function(require, exports, module) {
+ace.define('ace/ext/tern', ['require', 'exports', 'module', 'ace/snippets', 'ace/autocomplete', 'ace/config', 'ace/editor'], function(require, exports, module) {
 
     //#region LoadCompletors_fromLangTools
     var config = require("../config");
@@ -122,25 +120,37 @@ function(require, exports, module) {
 
 
     //#region Tern
-    var ternOptions = {
-        defs: ['jquery', 'browser', 'ecma5'],
-        plugins: {
-            doc_comment: {
-                fullDocs: true
-            }
-        },
-        workerScript: config.moduleUrl('worker/tern'),
-        useWorker: true,
-        switchToDoc: function(name, start) {
-            console.log('switchToDoc called but not defined. name=' + name + '; start=', start);
-        }
-    };
+    var ternOptions = {};
 
     var TernServer = require("../tern").TernServer;
     var aceTs;
-    /** assigns local var aceTs to a new TernServer instance using local var ternOptions */
-    var createTernServer = function() {
-        aceTs = new TernServer(ternOptions);
+    /** 
+     * assigns local var aceTs to a new TernServer instance using local var ternOptions.
+     * Automatically loads tern worker script if not loaded and not using worker (no need to load if useing worker)
+     * @param {function} cb - callback which is called when server is created (because loading tern source may be required)
+     */
+    var createTernServer = function(cb) {
+        var src = config.moduleUrl('worker/tern');
+        //if useWorker was set to false, then load file (because useWorker is default)
+        if (ternOptions.useWorker === false) {
+            var id = 'ace_tern_files';
+            if (document.getElementById(id)) inner();
+            else {
+                var el = document.createElement('script');
+                el.setAttribute('id', id);
+                document.head.appendChild(el);
+                el.onload = inner;
+                el.setAttribute('src', src);
+            }
+        }
+        else inner();
+
+        function inner() {
+            //ensure that workerScript url is passed to tern
+            if (!ternOptions.workerScript) ternOptions.workerScript = src;
+            aceTs = new TernServer(ternOptions);
+            cb();
+        }
     };
 
     //hack: need a better solution to get the editor variable inside of the editor.getSession().selection.onchangeCursor event as the passed variable is of the selection, not the editor. This variable is being set in the enableTern set Option
@@ -187,26 +197,29 @@ function(require, exports, module) {
              * @note - Use this to restart tern with new options by setting to false then true again by passing new options;
              */
             set: function(val) {
+                var self = this;
                 if (typeof val === 'object') {
-                    ternOptions = val; //TODO: perhaps merge options with defaults..
+                    ternOptions = val;
                     val = true;
                 }
                 if (val) {
-                    editor_for_OnCusorChange = this; //hack
-                    createTernServer();
-                    this.completers = completers;
-                    this.ternServer = aceTs;
-                    this.commands.addCommand(Autocomplete.startCommand);
-                    this.getSession().selection.on('changeCursor', onCursorChange_Tern);
-                    this.commands.on('afterExec', onAfterExec_Tern);
-                    aceTs.bindAceKeys(this);
+                    editor_for_OnCusorChange = self; //hack
+                    createTernServer(function() {
+                        self.completers = completers;
+                        self.ternServer = aceTs;
+                        self.commands.addCommand(Autocomplete.startCommand);
+                        self.getSession().selection.on('changeCursor', onCursorChange_Tern);
+                        self.commands.on('afterExec', onAfterExec_Tern);
+                        //becasue this may be async, we provide callback as option
+                        if (ternOptions.startedCb) ternOptions.startedCb();
+                    });
                 }
                 else {
-                    delete this.ternServer;
-                    this.getSession().selection.off('changeCursor', onCursorChange_Tern);
-                    this.commands.off('afterExec', onAfterExec_Tern);
-                    if (!this.enableBasicAutocompletion) {
-                        this.commands.removeCommand(Autocomplete.startCommand);
+                    delete self.ternServer;
+                    self.getSession().selection.off('changeCursor', onCursorChange_Tern);
+                    self.commands.off('afterExec', onAfterExec_Tern);
+                    if (!self.enableBasicAutocompletion) {
+                        self.commands.removeCommand(Autocomplete.startCommand);
                     }
                 }
             },
@@ -263,27 +276,49 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
      */
     var TernServer = function(options) {
         var self = this;
+
+        //merge options with defaults
         this.options = options || {};
+
+        //default plugins
         var plugins = this.options.plugins || (this.options.plugins = {});
-        if (!plugins.doc_comment) {
-            plugins.doc_comment = {
-                fullDocs: true
-            };
-        }
+        if (!plugins.hasOwnProperty('doc_comment')) plugins.doc_comment = {};
+        if (!plugins.doc_comment.hasOwnProperty('fullDocs')) plugins.doc_comment.fullDocs = true; //default to true if not specified
+
+        //default switchToDoc
+        if (this.options.hasOwnProperty('switchToDoc')) this.options.switchToDoc = function(name, start) {
+            console.log('tern.switchToDoc called but not defined (need to specify this in options to enable jumpting between documents). name=' + name + '; start=', start);
+        };
+
+        //default defs
+        if (!this.options.hasOwnProperty('defs')) this.options.defs = [ /*'jquery',*/ 'browser', 'ecma5'];
+
+        //default worker
+        if (!this.options.hasOwnProperty('useWorker')) this.options.useWorker = true;
         if (this.options.useWorker) {
             this.server = new WorkerServer(this, this.options.workerClass);
         }
         else {
-            //  logO(plugins, 'plugins in new tern server');
+            //HACK: defs are hard coded into worker-tern.js file
+            //when using worker, this is handled in the worker-tern.js file instead of here
+            if (this.options.defs && this.options.defs.length > 0) {
+                var tmp = [];
+                for (var i = 0; i < this.options.defs.length; i++) {
+                    tmp.push(eval('def_' + this.options.defs[i]));
+                }
+                this.options.defs = tmp;
+            }
+        
             this.server = new tern.Server({
                 getFile: function(name, c) {
                     return getFile(self, name, c);
                 },
                 async: true,
-                defs: this.options.defs || [],
-                plugins: plugins
+                defs: this.options.defs,
+                plugins: this.options.plugins
             });
         }
+
         this.docs = Object.create(null);
         /**
          * Fired from editor.onChange
@@ -312,7 +347,7 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
         this.queryTimeout = 3000;
         if (this.options.queryTimeout && !isNaN(parseInt(this.options.queryTimeout))) this.queryTimeout = parseInt(this.options.queryTimeout);
     };
-    
+
 
     //#region helpers
     /**
@@ -946,7 +981,7 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
                 //console.log('textCompletions',textCompletions); console.log('otherCompletions',otherCompletions);
                 if (debugCompletions) console.timeEnd('aceTextCompletor');
             }
-            
+
             //now merge other completions with tern (tern has priority)
             //tested on 5,000 line doc with all other completions and takes about ~10ms
             if (otherCompletions.length > 0) {
@@ -2807,8 +2842,8 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
     var dom = require("ace/lib/dom");
     dom.importCssString(".Ace-Tern-tooltip { border: 1px solid silver; border-radius: 3px; color: #444; padding: 2px 5px; padding-right:15px; /*for close button*/ font-size: 90%; font-family: monospace; background-color: white; white-space: pre-wrap; max-width: 50em; max-height:30em; overflow-y:auto; position: absolute; z-index: 10; -webkit-box-shadow: 2px 3px 5px rgba(0, 0, 0, .2); -moz-box-shadow: 2px 3px 5px rgba(0, 0, 0, .2); box-shadow: 2px 3px 5px rgba(0, 0, 0, .2); transition: opacity 1s; -moz-transition: opacity 1s; -webkit-transition: opacity 1s; -o-transition: opacity 1s; -ms-transition: opacity 1s; } .Ace-Tern-tooltip-boxclose { position:absolute; top:0; right:3px; color:red; } .Ace-Tern-tooltip-boxclose:hover { background-color:yellow; } .Ace-Tern-tooltip-boxclose:before { content:'×'; cursor:pointer; font-weight:bold; font-size:larger; } .Ace-Tern-completion { padding-left: 12px; position: relative; } .Ace-Tern-completion:before { position: absolute; left: 0; bottom: 0; border-radius: 50%; font-weight: bold; height: 13px; width: 13px; font-size:11px; /*BYM*/ line-height: 14px; text-align: center; color: white; -moz-box-sizing: border-box; -webkit-box-sizing: border-box; box-sizing: border-box; } .Ace-Tern-completion-unknown:before { content:'?'; background: #4bb; } .Ace-Tern-completion-object:before { content:'O'; background: #77c; } .Ace-Tern-completion-fn:before { content:'F'; background: #7c7; } .Ace-Tern-completion-array:before { content:'A'; background: #c66; } .Ace-Tern-completion-number:before { content:'1'; background: #999; } .Ace-Tern-completion-string:before { content:'S'; background: #999; } .Ace-Tern-completion-bool:before { content:'B'; background: #999; } .Ace-Tern-completion-guess { color: #999; } .Ace-Tern-hint-doc { max-width: 35em; } .Ace-Tern-fhint-guess { opacity: .7; } .Ace-Tern-fname { color: black; } .Ace-Tern-farg { color: #70a; } .Ace-Tern-farg-current { color: #70a; font-weight:bold; font-size:larger; text-decoration:underline; } .Ace-Tern-farg-current-description { font-style:italic; margin-top:2px; color:black; } .Ace-Tern-farg-current-name { font-weight:bold; } .Ace-Tern-type { color: #07c; font-size:smaller; } .Ace-Tern-jsdoc-tag { color: #B93A38; text-transform: lowercase; font-size:smaller; font-weight:600; } .Ace-Tern-jsdoc-param-wrapper{ /*background-color: #FFFFE3; padding:3px;*/ } .Ace-Tern-jsdoc-tag-param-child{ display:inline-block; width:0px; } .Ace-Tern-jsdoc-param-optionalWrapper { font-style:italic; } .Ace-Tern-jsdoc-param-optionalBracket { color:grey; font-weight:bold; } .Ace-Tern-jsdoc-param-name { color: #70a; font-weight:bold; } .Ace-Tern-jsdoc-param-defaultValue { color:grey; } .Ace-Tern-jsdoc-param-description { color:black; } .Ace-Tern-typeHeader-simple{ font-size:smaller; font-weight:bold; display:block; font-style:italic; margin-bottom:3px; color:grey; } .Ace-Tern-typeHeader{ display:block; font-style:italic; margin-bottom:3px; } .Ace-Tern-tooltip-link{font-size:smaller; color:blue;} .ace_autocomplete {width: 400px !important;}", "ace_tern");
     //#endregion
-    
-    
+
+
     //#endregion
-    
+
 });

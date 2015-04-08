@@ -7,6 +7,7 @@
         <style type="text/css" media="screen">
             body {
                 overflow: hidden;
+                background-color: #EFEFEF;
             }
             #editor {
                 margin: 0;
@@ -43,7 +44,8 @@
         <pre id="editor"></pre>
         <div id="issues" style="overflow:auto;">
             <a href="https://github.com/sevin7676/Ace.Tern" target="_blank">https://github.com/sevin7676/Ace.Tern</a>
-            <br/><br/>Mode:
+            <br/>
+            <br/>Mode:
             <select id="modeSelect" onchange="ChangeMode();">
                 <option>javascript</option>
                 <option>html</option>
@@ -80,32 +82,20 @@
                 </tr>
             </table>
         </div>
-        <script src="helpers.js"></script>
-        <script src="https://ajax.googleapis.com/ajax/libs/jquery/1.10.2/jquery.min.js" type="text/javascript"></script>
         <script>
-            var modeDocs = {
-                'javascript': '//json test object\nvar jsonObject ={\n    //prop one\n    one:"one", \n    //prop two\n    propTwo:"propTwo"\n};\n\n//type a dot after json object and tern will get peropties\njsonObject\n\n/**\n * Description of this fn\n * @param {int} a - first number\n * @param {decimal} b - second number\n * @param {number} [c] - third number to include \n * @param {bool} [useSum=false] - pass true to use sum instead of product\n * @returns {number} the product of the passed parameters \n */\nfunction TestFn(a, b, c, useSum){\n   if (useSum === true) {\n        if (c) return a + b + c;\n        return a + b;\n    }\n    if (c) return a * b * c;\n    return a * b;\n}\n\n//place cursor inside of parenthesis to see argument hints\nvar tmp = TestFn(100,200);\n\n/** \n * test function with object as argument and jsDoc comments that describe the object properties \n * @param {object} obj \n * @param {bool} [obj.boolProp=false] - bool property \n * @param {array} [obj.arrayProp] - array property \n * @param {string} [obj.stringProp=default string] - string property with default \n * @returns {object} passed object with default values set where properties are missing \n */ \nfunction TestObjectArg(obj){ \n\tif (typeof(obj) !== "object") { \n\t\tthrow new Error("obj parameter is required and must be an object"); \n\t} \n\tif (!obj.boolProp) { \n\t\tobj.boolProp = false; \n\t} \n\tif (!Array.isArray(obj.arrayProp)) { \n\t\tobj.arrayProp = []; \n\t} \n\tif (typeof(obj.stringProp) !== "string") { \n\t\tobj.stringProp = "default string"; \n\t} \n\treturn obj; \n}\n\n//place cursor inside of parenthesis to see advanced object arg hints from comments\nTestObjectArg();\n\n\n',
-                'html': '<h1>HTML Mode</h1>\n\n<SCRP>\nalert("html mode");\n</SCRP>'
-            }
-
-            //testing mode changing
-                function ChangeMode() {
-                    var mode = $('#modeSelect').val();
-                    editor.session.setMode("ace/mode/" + mode);
-                    var doc = modeDocs[mode].replace(/SCRP/g, 'script');
-                    editor.setValue(doc);
-                }
-        </script>
+</script>
         <!-- load ace -->
         <script src="ace-builds/src-noconflict/ace.js"></script>
-        <!-- load ace language tools this allows the following to work: var langTools=a ce.require("ace/ext/language_tools"); <script src="ace-builds/src-noconflict/ext-language_tools.js"></script>
-
-        -->
         <script>
+            // set to false to prevent using worker, which is needed to run this from local html file due to browser security restritions
+            var useWebWorker = true;
             var editor = ace.edit("editor");
-            editor.setValue(modeDocs.javascript);
+            editor.getSession().setUseWorker(useWebWorker);
             
-            //#region not relevant to tern
+            //set editor content for demo
+            editor.setValue(modeDocs().javascript);
+            
+            //#region not relevant to tern, just some deafults I prefer
             editor.setTheme("ace/theme/chrome");
             editor.session.setMode("ace/mode/javascript");
             editor.getSession().setUseWrapMode(true);
@@ -113,15 +103,53 @@
             editor.setShowPrintMargin(false);
             //#endregion
             
-            var server = null;
             ace.config.loadModule('ace/ext/language_tools', function() {
                 ace.config.loadModule('ace/ext/tern', function() {
                     editor.setOptions({
-                        enableTern: true,
+                        /**
+                         * Either `true` or `false` or to enable with custom options pass object that 
+                         * has options for tern server: http://ternjs.net/doc/manual.html#server_api
+                         * If `true`, then default options will be used, which are displayed below.
+                         */
+                        enableTern: {
+                            /* http://ternjs.net/doc/manual.html#option_defs */
+                            defs: ['jquery', 'browser', 'ecma5'],
+                            /* http://ternjs.net/doc/manual.html#plugins */
+                            plugins: {
+                                doc_comment: {
+                                    fullDocs: true
+                                }
+                            },
+                            /**
+                             * (default is true) If web worker is used for tern server.
+                             * This is recommended as it offers better performance, but prevents this from working in a local html file due to browser security restrictions
+                             */
+                            useWorker: useWebWorker,
+                            /* if your editor supports switching between different files (such as tabbed interface) then tern can do this when jump to defnition of function in another file is called, but you must tell tern what to execute in order to jump to the specified file */
+                            switchToDoc: function(name, start) {
+                                console.log('switchToDoc called but not defined. name=' + name + '; start=', start);
+                            },
+                            /**
+                             * if passed, this function will be called once ternServer is started. 
+                             * This is needed when useWorker=false because the tern source files are loaded asynchronously before the server is started.
+                             */
+                            startedCb: function() {
+                                //once tern is enabled, it can be accessed via editor.ternServer
+                                console.log('editor.ternServer:', editor.ternServer);
+                            },
+                        },
+                        /**
+                         * when using tern, it takes over Ace's built in snippets support.
+                         * this setting affects all modes when using tern, not just javascript.
+                         */
                         enableSnippets: false,
-                        enableBasicAutocompletion: true
+                        /**
+                         * when using tern, Ace's basic text auto completion is enabled still by deafult. 
+                         * This settings affects all modes when using tern, not just javascript. 
+                         * For javascript mode the basic auto completion will be added to completion results if tern fails to find completions or if you double tab the hotkey for get completion (default is ctrl+space, so hit ctrl+space twice rapidly to include basic text completions in the result)
+                         */
+                        enableBasicAutocompletion: true,
                     });
-                    server = ace.require('ace/ext/tern').server;
                 });
             });
             
@@ -132,6 +160,23 @@
                 });
             });
             //#endregion
+            
+            
+            //demo documents
+            function modeDocs() {
+                return {
+                    javascript: '//json test object\nvar jsonObject ={\n    //prop one\n    one:"one", \n    //prop two\n    propTwo:"propTwo"\n};\n\n//type a dot after json object and tern will get peropties\njsonObject\n\n/**\n * Description of this fn\n * @param {int} a - first number\n * @param {decimal} b - second number\n * @param {number} [c] - third number to include \n * @param {bool} [useSum=false] - pass true to use sum instead of product\n * @returns {number} the product of the passed parameters \n */\nfunction TestFn(a, b, c, useSum){\n   if (useSum === true) {\n        if (c) return a + b + c;\n        return a + b;\n    }\n    if (c) return a * b * c;\n    return a * b;\n}\n\n//place cursor inside of parenthesis to see argument hints\nvar tmp = TestFn(100,200);\n\n/** \n * test function with object as argument and jsDoc comments that describe the object properties \n * @param {object} obj \n * @param {bool} [obj.boolProp=false] - bool property \n * @param {array} [obj.arrayProp] - array property \n * @param {string} [obj.stringProp=default string] - string property with default \n * @returns {object} passed object with default values set where properties are missing \n */ \nfunction TestObjectArg(obj){ \n\tif (typeof(obj) !== "object") { \n\t\tthrow new Error("obj parameter is required and must be an object"); \n\t} \n\tif (!obj.boolProp) { \n\t\tobj.boolProp = false; \n\t} \n\tif (!Array.isArray(obj.arrayProp)) { \n\t\tobj.arrayProp = []; \n\t} \n\tif (typeof(obj.stringProp) !== "string") { \n\t\tobj.stringProp = "default string"; \n\t} \n\treturn obj; \n}\n\n//place cursor inside of parenthesis to see advanced object arg hints from comments\nTestObjectArg();\n\n\n',
+                    html: '<h1>HTML Mode</h1>\n\n<SCRP>\nalert("html mode");\n</SCRP>'
+                };
+            }
+            
+            //testing mode changing
+            function ChangeMode() {
+                var mode = document.getElementById('modeSelect').value;
+                editor.session.setMode("ace/mode/" + mode);
+                var doc = modeDocs()[mode].replace(/SCRP/g, 'script');
+                editor.setValue(doc);
+            }
         </script>
         <div id="CurrentToken" style="color:blue; position:fixed; z-index:99; top:5px; right:5px; font-size:11px;"></div>
     </body>
