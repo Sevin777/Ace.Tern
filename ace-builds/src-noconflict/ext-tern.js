@@ -672,7 +672,7 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
      * Converts ace CursorPosistion {row,column} to tern posistion {line,ch}
      */
     function toTernLoc(pos) {
-        if (pos.row) {
+        if (typeof(pos.row) !== 'undefined') {
             return {
                 line: pos.row,
                 ch: pos.column
@@ -767,6 +767,7 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
                 cur.changed = null;
             }
         }
+        
         return {
             query: query,
             files: files,
