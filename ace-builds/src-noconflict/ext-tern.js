@@ -170,8 +170,8 @@ ace.define('ace/ext/tern', ['require', 'exports', 'module', 'ace/snippets', 'ace
     var onAfterExec_Tern = function(e, commandManager) {
         if (e.command.name === "insertstring" && e.args === ".") {
             if (e.editor.ternServer && e.editor.ternServer.enabledAtCurrentLocation(e.editor)) {
-                var pos = editor.getSelectionRange().end;
-                var tok = editor.session.getTokenAt(pos.row, pos.column);
+                var pos = e.editor.getSelectionRange().end;
+                var tok = e.editor.session.getTokenAt(pos.row, pos.column);
                 if (tok) {
                     if (tok.type !== 'string' && tok.type.toString().indexOf('comment') === -1) {
                         try {
