@@ -528,10 +528,6 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
         findRefs: function(editor) {
             findRefs(this, editor);
         },
-
-        selectName: function(cm) {
-            selectName(this, cm);
-        },
         /**
          * Sends request to tern server
          * @param {function} c - callback(error,data)
