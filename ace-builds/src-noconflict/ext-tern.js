@@ -287,7 +287,7 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
         if (!plugins.doc_comment.hasOwnProperty('fullDocs')) plugins.doc_comment.fullDocs = true; //default to true if not specified
 
         //default switchToDoc
-        if (this.options.hasOwnProperty('switchToDoc')) this.options.switchToDoc = function(name, start) {
+        if (!this.options.hasOwnProperty('switchToDoc')) this.options.switchToDoc = function(name, start) {
             console.log('tern.switchToDoc called but not defined (need to specify this in options to enable jumpting between documents). name=' + name + '; start=', start);
         };
 
