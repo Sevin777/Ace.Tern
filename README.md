@@ -20,5 +20,6 @@ Building
 ============
  - Currently this code is part of the Ace source (no longer hacked on top of pre-built Ace) in my fork: https://github.com/sevin7676/ace
  - Use my fork to make changes, then build it to get the src-noconflict, and copy that directory into this repo to update it.
+ - After updating this repo, copy the changes to Caret-T Chrome App
 
 
