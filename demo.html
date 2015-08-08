@@ -20,7 +20,7 @@
             border-right: 1px solid black;
         }
         
-        #issues {
+        #info {
             position: absolute;
             top: 30px;
             bottom: 10px;
@@ -41,14 +41,12 @@
             margin-top: 20px;
             margin-bottom: 3px
         }
-        
-        .test {}
     </style>
 </head>
 
 <body>
     <pre id="editor"></pre>
-    <div id="issues" style="overflow:auto;">
+    <div id="info" style="overflow:auto;">
         <a href="https://github.com/sevin7676/Ace.Tern" target="_blank">https://github.com/sevin7676/Ace.Tern</a>
         <br/>
         <br/>Mode:
@@ -88,17 +86,17 @@
             </tr>
         </table>
     </div>
-    <script>
-    </script>
     <!-- load ace -->
     <script src="ace-builds/src-noconflict/ace.js"></script>
     <script>
         // set to false to prevent using worker, which is needed to run this from local html file due to browser security restritions
         var useWebWorker = true;
+
+        //create editor
         var editor = ace.edit("editor");
         editor.getSession().setUseWorker(useWebWorker);
 
-        setModeFromHash(); //set editor content for demo
+        setModeFromHash(); //set editor content for demo only
 
         //#region not relevant to tern, just some deafults I prefer
         editor.setTheme("ace/theme/chrome");
@@ -146,7 +144,7 @@
                      * when using tern, it takes over Ace's built in snippets support.
                      * this setting affects all modes when using tern, not just javascript.
                      */
-                    enableSnippets: false,
+                    enableSnippets: true,
                     /**
                      * when using tern, Ace's basic text auto completion is enabled still by deafult. 
                      * This settings affects all modes when using tern, not just javascript. 
@@ -192,12 +190,11 @@
             editor.session.setMode("ace/mode/" + mode);
             GetFile(mode == 'javascript' ? 'DemoJavascript.js' : 'demo.html', function (f) {
                 editor.setValue(f);
-                
+
             });
         }
         //#endregion
     </script>
-    <div id="CurrentToken" style="color:blue; position:fixed; z-index:99; top:5px; right:5px; font-size:11px;"></div>
 </body>
 
 </html>

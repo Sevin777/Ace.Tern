@@ -1,307 +1,1777 @@
-/*jshint maxerr:10000, eqnull:true */
+ace.define("ace/snippets",["require","exports","module","ace/lib/oop","ace/lib/event_emitter","ace/lib/lang","ace/range","ace/anchor","ace/keyboard/hash_handler","ace/tokenizer","ace/lib/dom","ace/editor"], function(require, exports, module) {
+"use strict";
+var oop = require("./lib/oop");
+var EventEmitter = require("./lib/event_emitter").EventEmitter;
+var lang = require("./lib/lang");
+var Range = require("./range").Range;
+var Anchor = require("./anchor").Anchor;
+var HashHandler = require("./keyboard/hash_handler").HashHandler;
+var Tokenizer = require("./tokenizer").Tokenizer;
+var comparePoints = Range.comparePoints;
 
-/**
- * Ace Tern server configuration (uses worker in separate file)
- */
-ace.define('ace/ext/tern', ['require', 'exports', 'module', 'ace/snippets', 'ace/autocomplete', 'ace/config', 'ace/editor'], function(require, exports, module) {
+var SnippetManager = function() {
+    this.snippetMap = {};
+    this.snippetNameMap = {};
+};
 
-    //#region LoadCompletors_fromLangTools
-    var config = require("../config");
-    var snippetManager = require("../snippets").snippetManager;
-    var snippetCompleter = {
-        getCompletions: function(editor, session, pos, prefix, callback) {
-            var snippetMap = snippetManager.snippetMap;
-            var completions = [];
-            snippetManager.getActiveScopes(editor).forEach(function(scope) {
-                var snippets = snippetMap[scope] || [];
-                for (var i = snippets.length; i--;) {
-                    var s = snippets[i];
-                    var caption = s.name || s.tabTrigger;
-                    if (!caption) continue;
-                    completions.push({
-                        caption: caption,
-                        snippet: s.content,
-                        meta: s.tabTrigger && !s.name ? s.tabTrigger + "\u21E5 " : "snippet"
-                    });
-                }
-            }, this);
-            callback(null, completions);
+(function() {
+    oop.implement(this, EventEmitter);
+    
+    this.getTokenizer = function() {
+        function TabstopToken(str, _, stack) {
+            str = str.substr(1);
+            if (/^\d+$/.test(str) && !stack.inFormatString)
+                return [{tabstopId: parseInt(str, 10)}];
+            return [{text: str}];
         }
-    };
-    var textCompleter = require("../autocomplete/text_completer");
-    var keyWordCompleter = {
-        getCompletions: function(editor, session, pos, prefix, callback) {
-            var state = editor.session.getState(pos.row);
-            var completions = session.$mode.getCompletions(state, session, pos, prefix);
-            callback(null, completions);
+        function escape(ch) {
+            return "(?:[^\\\\" + ch + "]|\\\\.)";
         }
+        SnippetManager.$tokenizer = new Tokenizer({
+            start: [
+                {regex: /:/, onMatch: function(val, state, stack) {
+                    if (stack.length && stack[0].expectIf) {
+                        stack[0].expectIf = false;
+                        stack[0].elseBranch = stack[0];
+                        return [stack[0]];
+                    }
+                    return ":";
+                }},
+                {regex: /\\./, onMatch: function(val, state, stack) {
+                    var ch = val[1];
+                    if (ch == "}" && stack.length) {
+                        val = ch;
+                    }else if ("`$\\".indexOf(ch) != -1) {
+                        val = ch;
+                    } else if (stack.inFormatString) {
+                        if (ch == "n")
+                            val = "\n";
+                        else if (ch == "t")
+                            val = "\n";
+                        else if ("ulULE".indexOf(ch) != -1) {
+                            val = {changeCase: ch, local: ch > "a"};
+                        }
+                    }
+
+                    return [val];
+                }},
+                {regex: /}/, onMatch: function(val, state, stack) {
+                    return [stack.length ? stack.shift() : val];
+                }},
+                {regex: /\$(?:\d+|\w+)/, onMatch: TabstopToken},
+                {regex: /\$\{[\dA-Z_a-z]+/, onMatch: function(str, state, stack) {
+                    var t = TabstopToken(str.substr(1), state, stack);
+                    stack.unshift(t[0]);
+                    return t;
+                }, next: "snippetVar"},
+                {regex: /\n/, token: "newline", merge: false}
+            ],
+            snippetVar: [
+                {regex: "\\|" + escape("\\|") + "*\\|", onMatch: function(val, state, stack) {
+                    stack[0].choices = val.slice(1, -1).split(",");
+                }, next: "start"},
+                {regex: "/(" + escape("/") + "+)/(?:(" + escape("/") + "*)/)(\\w*):?",
+                 onMatch: function(val, state, stack) {
+                    var ts = stack[0];
+                    ts.fmtString = val;
+
+                    val = this.splitRegex.exec(val);
+                    ts.guard = val[1];
+                    ts.fmt = val[2];
+                    ts.flag = val[3];
+                    return "";
+                }, next: "start"},
+                {regex: "`" + escape("`") + "*`", onMatch: function(val, state, stack) {
+                    stack[0].code = val.splice(1, -1);
+                    return "";
+                }, next: "start"},
+                {regex: "\\?", onMatch: function(val, state, stack) {
+                    if (stack[0])
+                        stack[0].expectIf = true;
+                }, next: "start"},
+                {regex: "([^:}\\\\]|\\\\.)*:?", token: "", next: "start"}
+            ],
+            formatString: [
+                {regex: "/(" + escape("/") + "+)/", token: "regex"},
+                {regex: "", onMatch: function(val, state, stack) {
+                    stack.inFormatString = true;
+                }, next: "start"}
+            ]
+        });
+        SnippetManager.prototype.getTokenizer = function() {
+            return SnippetManager.$tokenizer;
+        };
+        return SnippetManager.$tokenizer;
     };
-    var completers = [snippetCompleter, textCompleter, keyWordCompleter];
-    exports.addCompleter = function(completer) {
-        completers.push(completer);
-    };
-    var expandSnippet = {
-        name: "expandSnippet",
-        exec: function(editor) {
-            var success = snippetManager.expandWithTab(editor);
-            if (!success) editor.execCommand("indent");
-        },
-        bindKey: "tab"
-    };
-    var loadSnippetsForMode = function(mode) {
-        var id = mode.$id;
-        if (!snippetManager.files) snippetManager.files = {};
-        loadSnippetFile(id);
-        if (mode.modes) mode.modes.forEach(loadSnippetsForMode);
-    };
-    var loadSnippetFile = function(id) {
-        if (!id || snippetManager.files[id]) return;
-        var snippetFilePath = id.replace("mode", "snippets");
-        snippetManager.files[id] = {};
-        config.loadModule(snippetFilePath, function(m) {
-            if (m) {
-                snippetManager.files[id] = m;
-                m.snippets = snippetManager.parseSnippetFile(m.snippetText);
-                snippetManager.register(m.snippets, m.scope);
-                if (m.includeScopes) {
-                    snippetManager.snippetMap[m.scope].includeScopes = m.includeScopes;
-                    m.includeScopes.forEach(function(x) {
-                        loadSnippetFile("ace/mode/" + x);
-                    });
-                }
-            }
+
+    this.tokenizeTmSnippet = function(str, startState) {
+        return this.getTokenizer().getLineTokens(str, startState).tokens.map(function(x) {
+            return x.value || x;
         });
     };
-    //#endregion
 
-
-    //#region AutoComplete
-
-    /* Override the StartAutoComplete command (from ext-language_tools)   */
-    var Autocomplete = require("../autocomplete").Autocomplete;
-    Autocomplete.startCommand = {
-        name: "startAutocomplete",
-        exec: function(editor, e) {
-            if (!editor.completer) {
-                editor.completer = new Autocomplete();
-            }
-            //determine which completers should be enabled
-            editor.completers = [];
-            if (editor.$enableSnippets) { //snippets are allowed with or without tern
-                editor.completers.push(snippetCompleter);
-            }
-
-            if (editor.ternServer && editor.$enableTern) {
-                //enable tern based on mode
-                if (editor.ternServer.enabledAtCurrentLocation(editor)) {
-                    editor.completers.push(editor.ternServer);
-                    editor.ternServer.aceTextCompletor = textCompleter; //9.30.2014- give tern the text completor
-                }
-                else {
-                    if (editor.$enableBasicAutocompletion) {
-                        editor.completers.push(textCompleter, keyWordCompleter);
-                    }
-                }
-            }
-            else { //tern not enabled
-                if (editor.$enableBasicAutocompletion) {
-                    editor.completers.push(textCompleter, keyWordCompleter);
-                }
-            }
-            editor.completer.showPopup(editor);
-            editor.completer.cancelContextMenu();
-        },
-        bindKey: "Ctrl-Space|Ctrl-Shift-Space|Alt-Space"
-    };
-    var onChangeMode = function(e, editor) {
-        loadSnippetsForMode(editor.session.$mode);
-    };
-    //#endregion
-
-
-    //#region Tern
-    var ternOptions = {};
-
-    var TernServer = require("../tern").TernServer;
-    var aceTs;
-    /** 
-     * assigns local var aceTs to a new TernServer instance using local var ternOptions.
-     * Automatically loads tern worker script if not loaded and not using worker (no need to load if useing worker)
-     * @param {function} cb - callback which is called when server is created (because loading tern source may be required)
-     */
-    var createTernServer = function(cb) {
-        var src = config.moduleUrl('worker/tern');
-        //if useWorker was set to false, then load file (because useWorker is default)
-        if (ternOptions.useWorker === false) {
-            var id = 'ace_tern_files';
-            if (document.getElementById(id)) inner();
-            else {
-                var el = document.createElement('script');
-                el.setAttribute('id', id);
-                document.head.appendChild(el);
-                el.onload = inner;
-                el.setAttribute('src', src);
-            }
+    this.$getDefaultValue = function(editor, name) {
+        if (/^[A-Z]\d+$/.test(name)) {
+            var i = name.substr(1);
+            return (this.variables[name[0] + "__"] || {})[i];
         }
-        else inner();
+        if (/^\d+$/.test(name)) {
+            return (this.variables.__ || {})[name];
+        }
+        name = name.replace(/^TM_/, "");
 
-        function inner() {
-            //ensure that workerScript url is passed to tern
-            if (!ternOptions.workerScript) ternOptions.workerScript = src;
-            aceTs = new TernServer(ternOptions);
-            cb();
+        if (!editor)
+            return;
+        var s = editor.session;
+        switch(name) {
+            case "CURRENT_WORD":
+                var r = s.getWordRange();
+            case "SELECTION":
+            case "SELECTED_TEXT":
+                return s.getTextRange(r);
+            case "CURRENT_LINE":
+                return s.getLine(editor.getCursorPosition().row);
+            case "PREV_LINE": // not possible in textmate
+                return s.getLine(editor.getCursorPosition().row - 1);
+            case "LINE_INDEX":
+                return editor.getCursorPosition().column;
+            case "LINE_NUMBER":
+                return editor.getCursorPosition().row + 1;
+            case "SOFT_TABS":
+                return s.getUseSoftTabs() ? "YES" : "NO";
+            case "TAB_SIZE":
+                return s.getTabSize();
+            case "FILENAME":
+            case "FILEPATH":
+                return "";
+            case "FULLNAME":
+                return "Ace";
         }
     };
-
-    //hack: need a better solution to get the editor variable inside of the editor.getSession().selection.onchangeCursor event as the passed variable is of the selection, not the editor. This variable is being set in the enableTern set Option
-    var editor_for_OnCusorChange = null;
-
-    //3.6.2015: debounce arg hints as it can be quite slow in very large files
-    var debounceArgHints;
-    //show arguments hints when cursor is moved
-    var onCursorChange_Tern = function(e, editor_getSession_selection) {
-        clearTimeout(debounceArgHints);
-        debounceArgHints = setTimeout(function() {
-            editor_for_OnCusorChange.ternServer.updateArgHints(editor_for_OnCusorChange);
-        }, 10);
+    this.variables = {};
+    this.getVariableValue = function(editor, varName) {
+        if (this.variables.hasOwnProperty(varName))
+            return this.variables[varName](editor, varName) || "";
+        return this.$getDefaultValue(editor, varName) || "";
     };
-
-    //automatically start auto complete when period is typed
-    var onAfterExec_Tern = function(e, commandManager) {
-        if (e.command.name === "insertstring" && e.args === ".") {
-            if (e.editor.ternServer && e.editor.ternServer.enabledAtCurrentLocation(e.editor)) {
-                var pos = e.editor.getSelectionRange().end;
-                var tok = e.editor.session.getTokenAt(pos.row, pos.column);
-                if (tok) {
-                    if (tok.type !== 'string' && tok.type.toString().indexOf('comment') === -1) {
-                        try {
-                            e.editor.ternServer.lastAutoCompleteFireTime = null; //reset since this was not triggered by user firing command but triggered automatically
+    this.tmStrFormat = function(str, ch, editor) {
+        var flag = ch.flag || "";
+        var re = ch.guard;
+        re = new RegExp(re, flag.replace(/[^gi]/, ""));
+        var fmtTokens = this.tokenizeTmSnippet(ch.fmt, "formatString");
+        var _self = this;
+        var formatted = str.replace(re, function() {
+            _self.variables.__ = arguments;
+            var fmtParts = _self.resolveVariables(fmtTokens, editor);
+            var gChangeCase = "E";
+            for (var i  = 0; i < fmtParts.length; i++) {
+                var ch = fmtParts[i];
+                if (typeof ch == "object") {
+                    fmtParts[i] = "";
+                    if (ch.changeCase && ch.local) {
+                        var next = fmtParts[i + 1];
+                        if (next && typeof next == "string") {
+                            if (ch.changeCase == "u")
+                                fmtParts[i] = next[0].toUpperCase();
+                            else
+                                fmtParts[i] = next[0].toLowerCase();
+                            fmtParts[i + 1] = next.substr(1);
                         }
-                        catch (ex) {}
-                        e.editor.execCommand("startAutocomplete");
+                    } else if (ch.changeCase) {
+                        gChangeCase = ch.changeCase;
                     }
+                } else if (gChangeCase == "U") {
+                    fmtParts[i] = ch.toUpperCase();
+                } else if (gChangeCase == "L") {
+                    fmtParts[i] = ch.toLowerCase();
                 }
             }
+            return fmtParts.join("");
+        });
+        this.variables.__ = null;
+        return formatted;
+    };
+
+    this.resolveVariables = function(snippet, editor) {
+        var result = [];
+        for (var i = 0; i < snippet.length; i++) {
+            var ch = snippet[i];
+            if (typeof ch == "string") {
+                result.push(ch);
+            } else if (typeof ch != "object") {
+                continue;
+            } else if (ch.skip) {
+                gotoNext(ch);
+            } else if (ch.processed < i) {
+                continue;
+            } else if (ch.text) {
+                var value = this.getVariableValue(editor, ch.text);
+                if (value && ch.fmtString)
+                    value = this.tmStrFormat(value, ch);
+                ch.processed = i;
+                if (ch.expectIf == null) {
+                    if (value) {
+                        result.push(value);
+                        gotoNext(ch);
+                    }
+                } else {
+                    if (value) {
+                        ch.skip = ch.elseBranch;
+                    } else
+                        gotoNext(ch);
+                }
+            } else if (ch.tabstopId != null) {
+                result.push(ch);
+            } else if (ch.changeCase != null) {
+                result.push(ch);
+            }
+        }
+        function gotoNext(ch) {
+            var i1 = snippet.indexOf(ch, i + 1);
+            if (i1 != -1)
+                i = i1;
+        }
+        return result;
+    };
+
+    this.insertSnippetForSelection = function(editor, snippetText) {
+        var cursor = editor.getCursorPosition();
+        var line = editor.session.getLine(cursor.row);
+        var tabString = editor.session.getTabString();
+        var indentString = line.match(/^\s*/)[0];
+        
+        if (cursor.column < indentString.length)
+            indentString = indentString.slice(0, cursor.column);
+
+        var tokens = this.tokenizeTmSnippet(snippetText);
+        tokens = this.resolveVariables(tokens, editor);
+        tokens = tokens.map(function(x) {
+            if (x == "\n")
+                return x + indentString;
+            if (typeof x == "string")
+                return x.replace(/\t/g, tabString);
+            return x;
+        });
+        var tabstops = [];
+        tokens.forEach(function(p, i) {
+            if (typeof p != "object")
+                return;
+            var id = p.tabstopId;
+            var ts = tabstops[id];
+            if (!ts) {
+                ts = tabstops[id] = [];
+                ts.index = id;
+                ts.value = "";
+            }
+            if (ts.indexOf(p) !== -1)
+                return;
+            ts.push(p);
+            var i1 = tokens.indexOf(p, i + 1);
+            if (i1 === -1)
+                return;
+
+            var value = tokens.slice(i + 1, i1);
+            var isNested = value.some(function(t) {return typeof t === "object"});          
+            if (isNested && !ts.value) {
+                ts.value = value;
+            } else if (value.length && (!ts.value || typeof ts.value !== "string")) {
+                ts.value = value.join("");
+            }
+        });
+        tabstops.forEach(function(ts) {ts.length = 0});
+        var expanding = {};
+        function copyValue(val) {
+            var copy = [];
+            for (var i = 0; i < val.length; i++) {
+                var p = val[i];
+                if (typeof p == "object") {
+                    if (expanding[p.tabstopId])
+                        continue;
+                    var j = val.lastIndexOf(p, i - 1);
+                    p = copy[j] || {tabstopId: p.tabstopId};
+                }
+                copy[i] = p;
+            }
+            return copy;
+        }
+        for (var i = 0; i < tokens.length; i++) {
+            var p = tokens[i];
+            if (typeof p != "object")
+                continue;
+            var id = p.tabstopId;
+            var i1 = tokens.indexOf(p, i + 1);
+            if (expanding[id]) {
+                if (expanding[id] === p)
+                    expanding[id] = null;
+                continue;
+            }
+            
+            var ts = tabstops[id];
+            var arg = typeof ts.value == "string" ? [ts.value] : copyValue(ts.value);
+            arg.unshift(i + 1, Math.max(0, i1 - i));
+            arg.push(p);
+            expanding[id] = p;
+            tokens.splice.apply(tokens, arg);
+
+            if (ts.indexOf(p) === -1)
+                ts.push(p);
+        }
+        var row = 0, column = 0;
+        var text = "";
+        tokens.forEach(function(t) {
+            if (typeof t === "string") {
+                if (t[0] === "\n"){
+                    column = t.length - 1;
+                    row ++;
+                } else
+                    column += t.length;
+                text += t;
+            } else {
+                if (!t.start)
+                    t.start = {row: row, column: column};
+                else
+                    t.end = {row: row, column: column};
+            }
+        });
+        var range = editor.getSelectionRange();
+        var end = editor.session.replace(range, text);
+
+        var tabstopManager = new TabstopManager(editor);
+        var selectionId = editor.inVirtualSelectionMode && editor.selection.index;
+        tabstopManager.addTabstops(tabstops, range.start, end, selectionId);
+    };
+    
+    this.insertSnippet = function(editor, snippetText) {
+        var self = this;
+        if (editor.inVirtualSelectionMode)
+            return self.insertSnippetForSelection(editor, snippetText);
+        
+        editor.forEachSelection(function() {
+            self.insertSnippetForSelection(editor, snippetText);
+        }, null, {keepOrder: true});
+        
+        if (editor.tabstopManager)
+            editor.tabstopManager.tabNext();
+    };
+
+    this.$getScope = function(editor) {
+        var scope = editor.session.$mode.$id || "";
+        scope = scope.split("/").pop();
+        if (scope === "html" || scope === "php") {
+            if (scope === "php" && !editor.session.$mode.inlinePhp) 
+                scope = "html";
+            var c = editor.getCursorPosition();
+            var state = editor.session.getState(c.row);
+            if (typeof state === "object") {
+                state = state[0];
+            }
+            if (state.substring) {
+                if (state.substring(0, 3) == "js-")
+                    scope = "javascript";
+                else if (state.substring(0, 4) == "css-")
+                    scope = "css";
+                else if (state.substring(0, 4) == "php-")
+                    scope = "php";
+            }
+        }
+        
+        return scope;
+    };
+
+    this.getActiveScopes = function(editor) {
+        var scope = this.$getScope(editor);
+        var scopes = [scope];
+        var snippetMap = this.snippetMap;
+        if (snippetMap[scope] && snippetMap[scope].includeScopes) {
+            scopes.push.apply(scopes, snippetMap[scope].includeScopes);
+        }
+        scopes.push("_");
+        return scopes;
+    };
+
+    this.expandWithTab = function(editor, options) {
+        var self = this;
+        var result = editor.forEachSelection(function() {
+            return self.expandSnippetForSelection(editor, options);
+        }, null, {keepOrder: true});
+        if (result && editor.tabstopManager)
+            editor.tabstopManager.tabNext();
+        return result;
+    };
+    
+    this.expandSnippetForSelection = function(editor, options) {
+        var cursor = editor.getCursorPosition();
+        var line = editor.session.getLine(cursor.row);
+        var before = line.substring(0, cursor.column);
+        var after = line.substr(cursor.column);
+
+        var snippetMap = this.snippetMap;
+        var snippet;
+        this.getActiveScopes(editor).some(function(scope) {
+            var snippets = snippetMap[scope];
+            if (snippets)
+                snippet = this.findMatchingSnippet(snippets, before, after);
+            return !!snippet;
+        }, this);
+        if (!snippet)
+            return false;
+        if (options && options.dryRun)
+            return true;
+        editor.session.doc.removeInLine(cursor.row,
+            cursor.column - snippet.replaceBefore.length,
+            cursor.column + snippet.replaceAfter.length
+        );
+
+        this.variables.M__ = snippet.matchBefore;
+        this.variables.T__ = snippet.matchAfter;
+        this.insertSnippetForSelection(editor, snippet.content);
+
+        this.variables.M__ = this.variables.T__ = null;
+        return true;
+    };
+
+    this.findMatchingSnippet = function(snippetList, before, after) {
+        for (var i = snippetList.length; i--;) {
+            var s = snippetList[i];
+            if (s.startRe && !s.startRe.test(before))
+                continue;
+            if (s.endRe && !s.endRe.test(after))
+                continue;
+            if (!s.startRe && !s.endRe)
+                continue;
+
+            s.matchBefore = s.startRe ? s.startRe.exec(before) : [""];
+            s.matchAfter = s.endRe ? s.endRe.exec(after) : [""];
+            s.replaceBefore = s.triggerRe ? s.triggerRe.exec(before)[0] : "";
+            s.replaceAfter = s.endTriggerRe ? s.endTriggerRe.exec(after)[0] : "";
+            return s;
         }
     };
 
-    completers.push(aceTs);
-    exports.server = aceTs;
+    this.snippetMap = {};
+    this.snippetNameMap = {};
+    this.register = function(snippets, scope) {
+        var snippetMap = this.snippetMap;
+        var snippetNameMap = this.snippetNameMap;
+        var self = this;
+        
+        if (!snippets) 
+            snippets = [];
+        
+        function wrapRegexp(src) {
+            if (src && !/^\^?\(.*\)\$?$|^\\b$/.test(src))
+                src = "(?:" + src + ")";
 
-    var Editor = require("../editor").Editor;
-    config.defineOptions(Editor.prototype, "editor", {
-        enableTern: {
-            /**
-             * Turns tern on or off
-             * @param {bool|object} val - true/false or pass an object that contains tern options to set to true and create tern server with passed options
-             * @note - Use this to restart tern with new options by setting to false then true again by passing new options;
-             */
-            set: function(val) {
-                var self = this;
-                if (typeof val === 'object') {
-                    ternOptions = val;
-                    val = true;
+            return src || "";
+        }
+        function guardedRegexp(re, guard, opening) {
+            re = wrapRegexp(re);
+            guard = wrapRegexp(guard);
+            if (opening) {
+                re = guard + re;
+                if (re && re[re.length - 1] != "$")
+                    re = re + "$";
+            } else {
+                re = re + guard;
+                if (re && re[0] != "^")
+                    re = "^" + re;
+            }
+            return new RegExp(re);
+        }
+
+        function addSnippet(s) {
+            if (!s.scope)
+                s.scope = scope || "_";
+            scope = s.scope;
+            if (!snippetMap[scope]) {
+                snippetMap[scope] = [];
+                snippetNameMap[scope] = {};
+            }
+
+            var map = snippetNameMap[scope];
+            if (s.name) {
+                var old = map[s.name];
+                if (old)
+                    self.unregister(old);
+                map[s.name] = s;
+            }
+            snippetMap[scope].push(s);
+
+            if (s.tabTrigger && !s.trigger) {
+                if (!s.guard && /^\w/.test(s.tabTrigger))
+                    s.guard = "\\b";
+                s.trigger = lang.escapeRegExp(s.tabTrigger);
+            }
+
+            s.startRe = guardedRegexp(s.trigger, s.guard, true);
+            s.triggerRe = new RegExp(s.trigger, "", true);
+
+            s.endRe = guardedRegexp(s.endTrigger, s.endGuard, true);
+            s.endTriggerRe = new RegExp(s.endTrigger, "", true);
+        }
+
+        if (snippets && snippets.content)
+            addSnippet(snippets);
+        else if (Array.isArray(snippets))
+            snippets.forEach(addSnippet);
+        
+        this._signal("registerSnippets", {scope: scope});
+    };
+    this.unregister = function(snippets, scope) {
+        var snippetMap = this.snippetMap;
+        var snippetNameMap = this.snippetNameMap;
+
+        function removeSnippet(s) {
+            var nameMap = snippetNameMap[s.scope||scope];
+            if (nameMap && nameMap[s.name]) {
+                delete nameMap[s.name];
+                var map = snippetMap[s.scope||scope];
+                var i = map && map.indexOf(s);
+                if (i >= 0)
+                    map.splice(i, 1);
+            }
+        }
+        if (snippets.content)
+            removeSnippet(snippets);
+        else if (Array.isArray(snippets))
+            snippets.forEach(removeSnippet);
+    };
+    this.parseSnippetFile = function(str) {
+        str = str.replace(/\r/g, "");
+        var list = [], snippet = {};
+        var re = /^#.*|^({[\s\S]*})\s*$|^(\S+) (.*)$|^((?:\n*\t.*)+)/gm;
+        var m;
+        while (m = re.exec(str)) {
+            if (m[1]) {
+                try {
+                    snippet = JSON.parse(m[1]);
+                    list.push(snippet);
+                } catch (e) {}
+            } if (m[4]) {
+                snippet.content = m[4].replace(/^\t/gm, "");
+                list.push(snippet);
+                snippet = {};
+            } else {
+                var key = m[2], val = m[3];
+                if (key == "regex") {
+                    var guardRe = /\/((?:[^\/\\]|\\.)*)|$/g;
+                    snippet.guard = guardRe.exec(val)[1];
+                    snippet.trigger = guardRe.exec(val)[1];
+                    snippet.endTrigger = guardRe.exec(val)[1];
+                    snippet.endGuard = guardRe.exec(val)[1];
+                } else if (key == "snippet") {
+                    snippet.tabTrigger = val.match(/^\S*/)[0];
+                    if (!snippet.name)
+                        snippet.name = val;
+                } else {
+                    snippet[key] = val;
                 }
-                if (val) {
-                    editor_for_OnCusorChange = self; //hack
-                    createTernServer(function() {
-                        self.completers = completers;
-                        self.ternServer = aceTs;
-                        self.commands.addCommand(Autocomplete.startCommand);
-                        self.getSession().selection.on('changeCursor', onCursorChange_Tern);
-                        self.commands.on('afterExec', onAfterExec_Tern);
-                        aceTs.bindAceKeys(self);
-                        //becasue this may be async, we provide callback as option
-                        if (ternOptions.startedCb) ternOptions.startedCb();
-                    });
-                }
-                else {
-                    delete self.ternServer;
-                    self.getSession().selection.off('changeCursor', onCursorChange_Tern);
-                    self.commands.off('afterExec', onAfterExec_Tern);
-                    if (!self.enableBasicAutocompletion) {
-                        self.commands.removeCommand(Autocomplete.startCommand);
-                    }
-                }
-            },
-            value: false
+            }
+        }
+        return list;
+    };
+    this.getSnippetByName = function(name, editor) {
+        var snippetMap = this.snippetNameMap;
+        var snippet;
+        this.getActiveScopes(editor).some(function(scope) {
+            var snippets = snippetMap[scope];
+            if (snippets)
+                snippet = snippets[name];
+            return !!snippet;
+        }, this);
+        return snippet;
+    };
+
+}).call(SnippetManager.prototype);
+
+
+var TabstopManager = function(editor) {
+    if (editor.tabstopManager)
+        return editor.tabstopManager;
+    editor.tabstopManager = this;
+    this.$onChange = this.onChange.bind(this);
+    this.$onChangeSelection = lang.delayedCall(this.onChangeSelection.bind(this)).schedule;
+    this.$onChangeSession = this.onChangeSession.bind(this);
+    this.$onAfterExec = this.onAfterExec.bind(this);
+    this.attach(editor);
+};
+(function() {
+    this.attach = function(editor) {
+        this.index = 0;
+        this.ranges = [];
+        this.tabstops = [];
+        this.$openTabstops = null;
+        this.selectedTabstop = null;
+
+        this.editor = editor;
+        this.editor.on("change", this.$onChange);
+        this.editor.on("changeSelection", this.$onChangeSelection);
+        this.editor.on("changeSession", this.$onChangeSession);
+        this.editor.commands.on("afterExec", this.$onAfterExec);
+        this.editor.keyBinding.addKeyboardHandler(this.keyboardHandler);
+    };
+    this.detach = function() {
+        this.tabstops.forEach(this.removeTabstopMarkers, this);
+        this.ranges = null;
+        this.tabstops = null;
+        this.selectedTabstop = null;
+        this.editor.removeListener("change", this.$onChange);
+        this.editor.removeListener("changeSelection", this.$onChangeSelection);
+        this.editor.removeListener("changeSession", this.$onChangeSession);
+        this.editor.commands.removeListener("afterExec", this.$onAfterExec);
+        this.editor.keyBinding.removeKeyboardHandler(this.keyboardHandler);
+        this.editor.tabstopManager = null;
+        this.editor = null;
+    };
+
+    this.onChange = function(e) {
+        var changeRange = e.data.range;
+        var isRemove = e.data.action[0] == "r";
+        var start = changeRange.start;
+        var end = changeRange.end;
+        var startRow = start.row;
+        var endRow = end.row;
+        var lineDif = endRow - startRow;
+        var colDiff = end.column - start.column;
+
+        if (isRemove) {
+            lineDif = -lineDif;
+            colDiff = -colDiff;
+        }
+        if (!this.$inChange && isRemove) {
+            var ts = this.selectedTabstop;
+            var changedOutside = ts && !ts.some(function(r) {
+                return comparePoints(r.start, start) <= 0 && comparePoints(r.end, end) >= 0;
+            });
+            if (changedOutside)
+                return this.detach();
+        }
+        var ranges = this.ranges;
+        for (var i = 0; i < ranges.length; i++) {
+            var r = ranges[i];
+            if (r.end.row < start.row)
+                continue;
+
+            if (isRemove && comparePoints(start, r.start) < 0 && comparePoints(end, r.end) > 0) {
+                this.removeRange(r);
+                i--;
+                continue;
+            }
+
+            if (r.start.row == startRow && r.start.column > start.column)
+                r.start.column += colDiff;
+            if (r.end.row == startRow && r.end.column >= start.column)
+                r.end.column += colDiff;
+            if (r.start.row >= startRow)
+                r.start.row += lineDif;
+            if (r.end.row >= startRow)
+                r.end.row += lineDif;
+
+            if (comparePoints(r.start, r.end) > 0)
+                this.removeRange(r);
+        }
+        if (!ranges.length)
+            this.detach();
+    };
+    this.updateLinkedFields = function() {
+        var ts = this.selectedTabstop;
+        if (!ts || !ts.hasLinkedRanges)
+            return;
+        this.$inChange = true;
+        var session = this.editor.session;
+        var text = session.getTextRange(ts.firstNonLinked);
+        for (var i = ts.length; i--;) {
+            var range = ts[i];
+            if (!range.linked)
+                continue;
+            var fmt = exports.snippetManager.tmStrFormat(text, range.original);
+            session.replace(range, fmt);
+        }
+        this.$inChange = false;
+    };
+    this.onAfterExec = function(e) {
+        if (e.command && !e.command.readOnly)
+            this.updateLinkedFields();
+    };
+    this.onChangeSelection = function() {
+        if (!this.editor)
+            return;
+        var lead = this.editor.selection.lead;
+        var anchor = this.editor.selection.anchor;
+        var isEmpty = this.editor.selection.isEmpty();
+        for (var i = this.ranges.length; i--;) {
+            if (this.ranges[i].linked)
+                continue;
+            var containsLead = this.ranges[i].contains(lead.row, lead.column);
+            var containsAnchor = isEmpty || this.ranges[i].contains(anchor.row, anchor.column);
+            if (containsLead && containsAnchor)
+                return;
+        }
+        this.detach();
+    };
+    this.onChangeSession = function() {
+        this.detach();
+    };
+    this.tabNext = function(dir) {
+        var max = this.tabstops.length;
+        var index = this.index + (dir || 1);
+        index = Math.min(Math.max(index, 1), max);
+        if (index == max)
+            index = 0;
+        this.selectTabstop(index);
+        if (index === 0)
+            this.detach();
+    };
+    this.selectTabstop = function(index) {
+        this.$openTabstops = null;
+        var ts = this.tabstops[this.index];
+        if (ts)
+            this.addTabstopMarkers(ts);
+        this.index = index;
+        ts = this.tabstops[this.index];
+        if (!ts || !ts.length)
+            return;
+        
+        this.selectedTabstop = ts;
+        if (!this.editor.inVirtualSelectionMode) {        
+            var sel = this.editor.multiSelect;
+            sel.toSingleRange(ts.firstNonLinked.clone());
+            for (var i = ts.length; i--;) {
+                if (ts.hasLinkedRanges && ts[i].linked)
+                    continue;
+                sel.addRange(ts[i].clone(), true);
+            }
+            if (sel.ranges[0])
+                sel.addRange(sel.ranges[0].clone());
+        } else {
+            this.editor.selection.setRange(ts.firstNonLinked);
+        }
+        
+        this.editor.keyBinding.addKeyboardHandler(this.keyboardHandler);
+    };
+    this.addTabstops = function(tabstops, start, end) {
+        if (!this.$openTabstops)
+            this.$openTabstops = [];
+        if (!tabstops[0]) {
+            var p = Range.fromPoints(end, end);
+            moveRelative(p.start, start);
+            moveRelative(p.end, start);
+            tabstops[0] = [p];
+            tabstops[0].index = 0;
+        }
+
+        var i = this.index;
+        var arg = [i + 1, 0];
+        var ranges = this.ranges;
+        tabstops.forEach(function(ts, index) {
+            var dest = this.$openTabstops[index] || ts;
+                
+            for (var i = ts.length; i--;) {
+                var p = ts[i];
+                var range = Range.fromPoints(p.start, p.end || p.start);
+                movePoint(range.start, start);
+                movePoint(range.end, start);
+                range.original = p;
+                range.tabstop = dest;
+                ranges.push(range);
+                if (dest != ts)
+                    dest.unshift(range);
+                else
+                    dest[i] = range;
+                if (p.fmtString) {
+                    range.linked = true;
+                    dest.hasLinkedRanges = true;
+                } else if (!dest.firstNonLinked)
+                    dest.firstNonLinked = range;
+            }
+            if (!dest.firstNonLinked)
+                dest.hasLinkedRanges = false;
+            if (dest === ts) {
+                arg.push(dest);
+                this.$openTabstops[index] = dest;
+            }
+            this.addTabstopMarkers(dest);
+        }, this);
+        
+        if (arg.length > 2) {
+            if (this.tabstops.length)
+                arg.push(arg.splice(2, 1)[0]);
+            this.tabstops.splice.apply(this.tabstops, arg);
+        }
+    };
+
+    this.addTabstopMarkers = function(ts) {
+        var session = this.editor.session;
+        ts.forEach(function(range) {
+            if  (!range.markerId)
+                range.markerId = session.addMarker(range, "ace_snippet-marker", "text");
+        });
+    };
+    this.removeTabstopMarkers = function(ts) {
+        var session = this.editor.session;
+        ts.forEach(function(range) {
+            session.removeMarker(range.markerId);
+            range.markerId = null;
+        });
+    };
+    this.removeRange = function(range) {
+        var i = range.tabstop.indexOf(range);
+        range.tabstop.splice(i, 1);
+        i = this.ranges.indexOf(range);
+        this.ranges.splice(i, 1);
+        this.editor.session.removeMarker(range.markerId);
+        if (!range.tabstop.length) {
+            i = this.tabstops.indexOf(range.tabstop);
+            if (i != -1)
+                this.tabstops.splice(i, 1);
+            if (!this.tabstops.length)
+                this.detach();
+        }
+    };
+
+    this.keyboardHandler = new HashHandler();
+    this.keyboardHandler.bindKeys({
+        "Tab": function(ed) {
+            if (exports.snippetManager && exports.snippetManager.expandWithTab(ed)) {
+                return;
+            }
+
+            ed.tabstopManager.tabNext(1);
         },
-        enableBasicAutocompletion: {
-            set: function(val) {
-                if (val) {
-                    this.completers = completers;
-                    this.commands.addCommand(Autocomplete.startCommand);
-                }
-                else {
-                    if (!this.$enableTern) {
-                        this.commands.removeCommand(Autocomplete.startCommand);
-                    }
-                }
-            },
-            value: false
+        "Shift-Tab": function(ed) {
+            ed.tabstopManager.tabNext(-1);
         },
-        enableSnippets: {
-            set: function(val) {
-                if (val) {
-                    this.commands.addCommand(expandSnippet);
-                    this.on("changeMode", onChangeMode);
-                    onChangeMode(null, this);
-                }
-                else {
-                    this.commands.removeCommand(expandSnippet);
-                    this.off("changeMode", onChangeMode);
-                }
-            },
-            value: false
+        "Esc": function(ed) {
+            ed.tabstopManager.detach();
+        },
+        "Return": function(ed) {
+            return false;
         }
     });
-    //#endregion
+}).call(TabstopManager.prototype);
+
+
+
+var changeTracker = {};
+changeTracker.onChange = Anchor.prototype.onChange;
+changeTracker.setPosition = function(row, column) {
+    this.pos.row = row;
+    this.pos.column = column;
+};
+changeTracker.update = function(pos, delta, $insertRight) {
+    this.$insertRight = $insertRight;
+    this.pos = pos; 
+    this.onChange(delta);
+};
+
+var movePoint = function(point, diff) {
+    if (point.row == 0)
+        point.column += diff.column;
+    point.row += diff.row;
+};
+
+var moveRelative = function(point, start) {
+    if (point.row == start.row)
+        point.column -= start.column;
+    point.row -= start.row;
+};
+
+
+require("./lib/dom").importCssString("\
+.ace_snippet-marker {\
+    -moz-box-sizing: border-box;\
+    box-sizing: border-box;\
+    background: rgba(194, 193, 208, 0.09);\
+    border: 1px dotted rgba(211, 208, 235, 0.62);\
+    position: absolute;\
+}");
+
+exports.snippetManager = new SnippetManager();
+
+
+var Editor = require("./editor").Editor;
+(function() {
+    this.insertSnippet = function(content, options) {
+        return exports.snippetManager.insertSnippet(this, content, options);
+    };
+    this.expandSnippet = function(options) {
+        return exports.snippetManager.expandWithTab(this, options);
+    };
+}).call(Editor.prototype);
+
 });
 
-/**
- *  tern server plugin for ace
- */
-ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function(require, exports, module) {
+ace.define("ace/autocomplete/text_completer",["require","exports","module","ace/range"], function(require, exports, module) {
+    var Range = require("../range").Range;
+    
+    var splitRegex = /[^a-zA-Z_0-9\$\-\u00C0-\u1FFF\u2C00-\uD7FF\w]+/;
+
+    function getWordIndex(doc, pos) {
+        var textBefore = doc.getTextRange(Range.fromPoints({row: 0, column:0}, pos));
+        return textBefore.split(splitRegex).length - 1;
+    }
+    function wordDistance(doc, pos) {
+        var prefixPos = getWordIndex(doc, pos);
+        var words = doc.getValue().split(splitRegex);
+        var wordScores = Object.create(null);
+        
+        var currentWord = words[prefixPos];
+
+        words.forEach(function(word, idx) {
+            if (!word || word === currentWord) return;
+
+            var distance = Math.abs(prefixPos - idx);
+            var score = words.length - distance;
+            if (wordScores[word]) {
+                wordScores[word] = Math.max(score, wordScores[word]);
+            } else {
+                wordScores[word] = score;
+            }
+        });
+        return wordScores;
+    }
+
+    exports.getCompletions = function(editor, session, pos, prefix, callback) {
+        var wordScore = wordDistance(session, pos, prefix);
+        var wordList = Object.keys(wordScore);
+        callback(null, wordList.map(function(word) {
+            return {
+                caption: word,
+                value: word,
+                score: wordScore[word],
+                meta: "local"
+            };
+        }));
+    };
+});
+
+ace.define("ace/autocomplete/popup",["require","exports","module","ace/edit_session","ace/virtual_renderer","ace/editor","ace/range","ace/lib/event","ace/lib/lang","ace/lib/dom"], function(require, exports, module) {
+"use strict";
+
+var EditSession = require("../edit_session").EditSession;
+var Renderer = require("../virtual_renderer").VirtualRenderer;
+var Editor = require("../editor").Editor;
+var Range = require("../range").Range;
+var event = require("../lib/event");
+var lang = require("../lib/lang");
+var dom = require("../lib/dom");
+
+var $singleLineEditor = function(el) {
+    var renderer = new Renderer(el);
+
+    renderer.$maxLines = 4;
+
+    var editor = new Editor(renderer);
+
+    editor.setHighlightActiveLine(false);
+    editor.setShowPrintMargin(false);
+    editor.renderer.setShowGutter(false);
+    editor.renderer.setHighlightGutterLine(false);
+
+    editor.$mouseHandler.$focusWaitTimout = 0;
+    editor.$highlightTagPending = true;
+
+    return editor;
+};
+
+var AcePopup = function(parentNode) {
+    var el = dom.createElement("div");
+    var popup = new $singleLineEditor(el);
+
+    if (parentNode)
+        parentNode.appendChild(el);
+    el.style.display = "none";
+    popup.renderer.content.style.cursor = "default";
+    popup.renderer.setStyle("ace_autocomplete");
+
+    popup.setOption("displayIndentGuides", false);
+    popup.setOption("dragDelay", 150);
+
+    var noop = function(){};
+
+    popup.focus = noop;
+    popup.$isFocused = true;
+
+    popup.renderer.$cursorLayer.restartTimer = noop;
+    popup.renderer.$cursorLayer.element.style.opacity = 0;
+
+    popup.renderer.$maxLines = 8;
+    popup.renderer.$keepTextAreaAtCursor = false;
+
+    popup.setHighlightActiveLine(false);
+    popup.session.highlight("");
+    popup.session.$searchHighlight.clazz = "ace_highlight-marker";
+
+    popup.on("mousedown", function(e) {
+        var pos = e.getDocumentPosition();
+        popup.selection.moveToPosition(pos);
+        selectionMarker.start.row = selectionMarker.end.row = pos.row;
+        e.stop();
+    });
+
+    var lastMouseEvent;
+    var hoverMarker = new Range(-1,0,-1,Infinity);
+    var selectionMarker = new Range(-1,0,-1,Infinity);
+    selectionMarker.id = popup.session.addMarker(selectionMarker, "ace_active-line", "fullLine");
+    popup.setSelectOnHover = function(val) {
+        if (!val) {
+            hoverMarker.id = popup.session.addMarker(hoverMarker, "ace_line-hover", "fullLine");
+        } else if (hoverMarker.id) {
+            popup.session.removeMarker(hoverMarker.id);
+            hoverMarker.id = null;
+        }
+    };
+    popup.setSelectOnHover(false);
+    popup.on("mousemove", function(e) {
+        if (!lastMouseEvent) {
+            lastMouseEvent = e;
+            return;
+        }
+        if (lastMouseEvent.x == e.x && lastMouseEvent.y == e.y) {
+            return;
+        }
+        lastMouseEvent = e;
+        lastMouseEvent.scrollTop = popup.renderer.scrollTop;
+        var row = lastMouseEvent.getDocumentPosition().row;
+        if (hoverMarker.start.row != row) {
+            if (!hoverMarker.id)
+                popup.setRow(row);
+            setHoverMarker(row);
+        }
+    });
+    popup.renderer.on("beforeRender", function() {
+        if (lastMouseEvent && hoverMarker.start.row != -1) {
+            lastMouseEvent.$pos = null;
+            var row = lastMouseEvent.getDocumentPosition().row;
+            if (!hoverMarker.id)
+                popup.setRow(row);
+            setHoverMarker(row, true);
+        }
+    });
+    popup.renderer.on("afterRender", function() {
+        var row = popup.getRow();
+        var t = popup.renderer.$textLayer;
+        var selected = t.element.childNodes[row - t.config.firstRow];
+        if (selected == t.selectedNode)
+            return;
+        if (t.selectedNode)
+            dom.removeCssClass(t.selectedNode, "ace_selected");
+        t.selectedNode = selected;
+        if (selected)
+            dom.addCssClass(selected, "ace_selected");
+    });
+    var hideHoverMarker = function() { setHoverMarker(-1) };
+    var setHoverMarker = function(row, suppressRedraw) {
+        if (row !== hoverMarker.start.row) {
+            hoverMarker.start.row = hoverMarker.end.row = row;
+            if (!suppressRedraw)
+                popup.session._emit("changeBackMarker");
+            popup._emit("changeHoverMarker");
+        }
+    };
+    popup.getHoveredRow = function() {
+        return hoverMarker.start.row;
+    };
+
+    event.addListener(popup.container, "mouseout", hideHoverMarker);
+    popup.on("hide", hideHoverMarker);
+    popup.on("changeSelection", hideHoverMarker);
+
+    popup.session.doc.getLength = function() {
+        return popup.data.length;
+    };
+    popup.session.doc.getLine = function(i) {
+        var data = popup.data[i];
+        if (typeof data == "string")
+            return data;
+        return (data && data.value) || "";
+    };
+
+    var bgTokenizer = popup.session.bgTokenizer;
+    bgTokenizer.$tokenizeRow = function(row) {
+        var data = popup.data[row];
+        var tokens = [];
+        if (!data)
+            return tokens;
+        if (typeof data == "string")
+            data = {value: data};
+        if (!data.caption)
+            data.caption = data.value || data.name;
+
+        var last = -1;
+        var flag, c;
+        
+        if (data.iconClass)//show icon in popup if specified by completor
+            tokens.push({
+                type: data.iconClass,
+                value: " "
+            });
+            
+        for (var i = 0; i < data.caption.length; i++) {
+            c = data.caption[i];
+            flag = data.matchMask & (1 << i) ? 1 : 0;
+            if (last !== flag) {
+                tokens.push({type: data.className || "" + ( flag ? "completion-highlight" : ""), value: c});
+                last = flag;
+            } else {
+                tokens[tokens.length - 1].value += c;
+            }
+        }
+
+        if (data.meta) {
+            var maxW = popup.renderer.$size.scrollerWidth / popup.renderer.layerConfig.characterWidth;
+            var metaData = data.meta;
+            if (metaData.length + data.caption.length > maxW - 2) {
+                metaData = metaData.substr(0, maxW - data.caption.length - 3) + "\u2026"
+            }
+            tokens.push({type: "rightAlignedText", value: metaData});
+        }
+        return tokens;
+    };
+    bgTokenizer.$updateOnChange = noop;
+    bgTokenizer.start = noop;
+
+    popup.session.$computeWidth = function() {
+        return this.screenWidth = 0;
+    };
+
+    popup.$blockScrolling = Infinity;
+    popup.isOpen = false;
+    popup.isTopdown = false;
+
+    popup.data = [];
+    popup.setData = function(list) {
+        popup.data = list || [];
+        popup.setValue(lang.stringRepeat("\n", list.length), -1);
+        popup.setRow(0);
+    };
+    popup.getData = function(row) {
+        return popup.data[row];
+    };
+
+    popup.getRow = function() {
+        return selectionMarker.start.row;
+    };
+    popup.setRow = function(line) {
+        line = Math.max(-1, Math.min(this.data.length, line));
+        if (selectionMarker.start.row != line) {
+            popup.selection.clearSelection();
+            selectionMarker.start.row = selectionMarker.end.row = line || 0;
+            popup.session._emit("changeBackMarker");
+            popup.moveCursorTo(line || 0, 0);
+            if (popup.isOpen)
+                popup._signal("select");
+        }
+    };
+
+    popup.on("changeSelection", function() {
+        if (popup.isOpen)
+            popup.setRow(popup.selection.lead.row);
+        popup.renderer.scrollCursorIntoView();
+    });
+
+    popup.hide = function() {
+        this.container.style.display = "none";
+        this._signal("hide");
+        popup.isOpen = false;
+    };
+    popup.show = function(pos, lineHeight, topdownOnly) {
+        var el = this.container;
+        var screenHeight = window.innerHeight;
+        var screenWidth = window.innerWidth;
+        var renderer = this.renderer;
+        var maxH = renderer.$maxLines * lineHeight * 1.4;
+        var top = pos.top + this.$borderSize;
+        if (top + maxH > screenHeight - lineHeight && !topdownOnly) {
+            el.style.top = "";
+            el.style.bottom = screenHeight - top + "px";
+            popup.isTopdown = false;
+        } else {
+            top += lineHeight;
+            el.style.top = top + "px";
+            el.style.bottom = "";
+            popup.isTopdown = true;
+        }
+
+        el.style.display = "";
+        this.renderer.$textLayer.checkForSizeChanges();
+
+        var left = pos.left;
+        if (left + el.offsetWidth > screenWidth)
+            left = screenWidth - el.offsetWidth;
+
+        el.style.left = left + "px";
+
+        this._signal("show");
+        lastMouseEvent = null;
+        popup.isOpen = true;
+    };
+
+    popup.getTextLeftOffset = function() {
+        return this.$borderSize + this.renderer.$padding + this.$imageSize;
+    };
+
+    popup.$imageSize = 0;
+    popup.$borderSize = 1;
+
+    return popup;
+};
+
+dom.importCssString("\
+.ace_editor.ace_autocomplete .ace_marker-layer .ace_active-line {\
+    background-color: #CAD6FA;\
+    z-index: 1;\
+}\
+.ace_editor.ace_autocomplete .ace_line-hover {\
+    border: 1px solid #abbffe;\
+    margin-top: -1px;\
+    background: rgba(233,233,253,0.4);\
+}\
+.ace_editor.ace_autocomplete .ace_line-hover {\
+    position: absolute;\
+    z-index: 2;\
+}\
+.ace_editor.ace_autocomplete .ace_scroller {\
+   background: none;\
+   border: none;\
+   box-shadow: none;\
+}\
+.ace_rightAlignedText {\
+    color: gray;\
+    display: inline-block;\
+    position: absolute;\
+    right: 4px;\
+    text-align: right;\
+    z-index: -1;\
+}\
+.ace_editor.ace_autocomplete .ace_completion-highlight{\
+    color: #000;\
+    text-shadow: 0 0 0.01em;\
+}\
+.ace_editor.ace_autocomplete {\
+    width: 280px;\
+    z-index: 200000;\
+    background: #fbfbfb;\
+    color: #444;\
+    border: 1px lightgray solid;\
+    position: fixed;\
+    box-shadow: 2px 3px 5px rgba(0,0,0,.2);\
+    line-height: 1.4;\
+}");
+
+exports.AcePopup = AcePopup;
+
+});
+
+ace.define("ace/autocomplete/util",["require","exports","module"], function(require, exports, module) {
+"use strict";
+
+exports.parForEach = function(array, fn, callback) {
+    var completed = 0;
+    var arLength = array.length;
+    if (arLength === 0)
+        callback();
+    for (var i = 0; i < arLength; i++) {
+        fn(array[i], function(result, err) {
+            completed++;
+            if (completed === arLength)
+                callback(result, err);
+        });
+    }
+};
+
+var ID_REGEX = /[a-zA-Z_0-9\$\-\u00A2-\uFFFF]/;
+
+exports.retrievePrecedingIdentifier = function(text, pos, regex) {
+    regex = regex || ID_REGEX;
+    var buf = [];
+    for (var i = pos-1; i >= 0; i--) {
+        if (regex.test(text[i]))
+            buf.push(text[i]);
+        else
+            break;
+    }
+    return buf.reverse().join("");
+};
+
+exports.retrieveFollowingIdentifier = function(text, pos, regex) {
+    regex = regex || ID_REGEX;
+    var buf = [];
+    for (var i = pos; i < text.length; i++) {
+        if (regex.test(text[i]))
+            buf.push(text[i]);
+        else
+            break;
+    }
+    return buf;
+};
+
+});
+
+ace.define("ace/autocomplete",["require","exports","module","ace/keyboard/hash_handler","ace/autocomplete/popup","ace/autocomplete/util","ace/lib/event","ace/lib/lang","ace/lib/dom","ace/snippets"], function(require, exports, module) {
+"use strict";
+
+var HashHandler = require("./keyboard/hash_handler").HashHandler;
+var AcePopup = require("./autocomplete/popup").AcePopup;
+var util = require("./autocomplete/util");
+var event = require("./lib/event");
+var lang = require("./lib/lang");
+var dom = require("./lib/dom");
+var snippetManager = require("./snippets").snippetManager;
+
+var Autocomplete = function() {
+    this.autoInsert = false;
+    this.autoSelect = true;
+    this.exactMatch = false;
+    this.gatherCompletionsId = 0;
+    this.keyboardHandler = new HashHandler();
+    this.keyboardHandler.bindKeys(this.commands);
+
+    this.blurListener = this.blurListener.bind(this);
+    this.changeListener = this.changeListener.bind(this);
+    this.mousedownListener = this.mousedownListener.bind(this);
+    this.mousewheelListener = this.mousewheelListener.bind(this);
+
+    this.changeTimer = lang.delayedCall(function() {
+        this.updateCompletions(true);
+    }.bind(this));
+
+    this.tooltipTimer = lang.delayedCall(this.updateDocTooltip.bind(this), 50);
+};
+
+(function() {
+
+    this.$init = function() {
+        this.popup = new AcePopup(document.body || document.documentElement);
+        this.popup.on("click", function(e) {
+            this.insertMatch();
+            e.stop();
+        }.bind(this));
+        this.popup.focus = this.editor.focus.bind(this.editor);
+        this.popup.on("show", this.tooltipTimer.bind(null, null));
+        this.popup.on("select", this.tooltipTimer.bind(null, null));
+        this.popup.on("changeHoverMarker", this.tooltipTimer.bind(null, null));
+        return this.popup;
+    };
+
+    this.getPopup = function() {
+        return this.popup || this.$init();
+    };
+
+    this.openPopup = function(editor, prefix, keepPopupPosition) {
+        if (!this.popup)
+            this.$init();
+
+        this.popup.setData(this.completions.filtered);
+
+        editor.keyBinding.addKeyboardHandler(this.keyboardHandler);
+        
+        var renderer = editor.renderer;
+        this.popup.setRow(this.autoSelect ? 0 : -1);
+        if (!keepPopupPosition) {
+            this.popup.setTheme(editor.getTheme());
+            this.popup.setFontSize(editor.getFontSize());
+
+            var lineHeight = renderer.layerConfig.lineHeight;
+
+            var pos = renderer.$cursorLayer.getPixelPosition(this.base, true);
+            pos.left -= this.popup.getTextLeftOffset();
+
+            var rect = editor.container.getBoundingClientRect();
+            pos.top += rect.top - renderer.layerConfig.offset;
+            pos.left += rect.left - editor.renderer.scrollLeft;
+            pos.left += renderer.$gutterLayer.gutterWidth;
+
+            this.popup.show(pos, lineHeight);
+        } else if (keepPopupPosition && !prefix) {
+            this.detach();
+        }
+    };
+
+    this.detach = function() {
+        this.editor.keyBinding.removeKeyboardHandler(this.keyboardHandler);
+        this.editor.off("changeSelection", this.changeListener);
+        this.editor.off("blur", this.blurListener);
+        this.editor.off("mousedown", this.mousedownListener);
+        this.editor.off("mousewheel", this.mousewheelListener);
+        this.changeTimer.cancel();
+        this.hideDocTooltip();
+
+        this.gatherCompletionsId += 1;
+        if (this.popup && this.popup.isOpen)
+            this.popup.hide();
+
+        if (this.base)
+            this.base.detach();
+        this.activated = false;
+        this.completions = this.base = null;
+    };
+
+    this.changeListener = function(e) {
+        var cursor = this.editor.selection.lead;
+        if (cursor.row != this.base.row || cursor.column < this.base.column) {
+            this.detach();
+        }
+        if (this.activated)
+            this.changeTimer.schedule();
+        else
+            this.detach();
+    };
+
+    this.blurListener = function(e) {
+        var el = document.activeElement;
+        var text = this.editor.textInput.getElement()
+        if (el != text && ( !this.popup || el.parentNode != this.popup.container )
+            && el != this.tooltipNode && e.relatedTarget != this.tooltipNode
+            && e.relatedTarget != text
+        ) {
+            this.detach();
+        }
+    };
+
+    this.mousedownListener = function(e) {
+        this.detach();
+    };
+
+    this.mousewheelListener = function(e) {
+        this.detach();
+    };
+
+    this.goTo = function(where) {
+        var row = this.popup.getRow();
+        var max = this.popup.session.getLength() - 1;
+
+        switch(where) {
+            case "up": row = row <= 0 ? max : row - 1; break;
+            case "down": row = row >= max ? -1 : row + 1; break;
+            case "start": row = 0; break;
+            case "end": row = max; break;
+        }
+
+        this.popup.setRow(row);
+    };
+
+    this.insertMatch = function(data) {
+        if (!data)
+            data = this.popup.getData(this.popup.getRow());
+        if (!data)
+            return false;
+
+        if (data.completer && data.completer.insertMatch) {
+            data.completer.insertMatch(this.editor, data);
+        } else {
+            if (this.completions.filterText) {
+                var ranges = this.editor.selection.getAllRanges();
+                for (var i = 0, range; range = ranges[i]; i++) {
+                    range.start.column -= this.completions.filterText.length;
+                    this.editor.session.remove(range);
+                }
+            }
+            if (data.snippet)
+                snippetManager.insertSnippet(this.editor, data.snippet);
+            else
+                this.editor.execCommand("insertstring", data.value || data);
+        }
+        this.detach();
+    };
 
 
-    //#region TernServerPublic
-    /**
-     * Tern Server Constructor {@link http://ternjs.net/doc/manual.html}
-     * @param {object} options - Options for server
-     * @param {string[]} [options.defs] - The definition objects to load into the server’s environment.
-     * @param {object} [options.plugins] - Specifies the set of plugins that the server should load. The property names of the object name the plugins, and their values hold options that will be passed to them.
-     * @param {function} [options.getFile] - Provides a way for the server to try and fetch the content of files. Depending on the async option, this is either a function that takes a filename and returns a string (when not async), or a function that takes a filename and a callback, and calls the callback with an optional error as the first argument, and the content string (if no error) as the second.
-     * @param {bool} [options.async=false] - Indicates whether getFile is asynchronous
-     * @param {int} [options.fetchTimeout=1000] - Indicates the maximum amount of milliseconds to wait for an asynchronous getFile before giving up on it
-     * @param {function} [resolveFilePath] optional function that takes a file path and modifies it as needed then peforms a callback with the result file path
-     */
-    var TernServer = function(options) {
+    this.commands = {
+        "Up": function(editor) { editor.completer.goTo("up"); },
+        "Down": function(editor) { editor.completer.goTo("down"); },
+        "Ctrl-Up|Ctrl-Home": function(editor) { editor.completer.goTo("start"); },
+        "Ctrl-Down|Ctrl-End": function(editor) { editor.completer.goTo("end"); },
+
+        "Esc": function(editor) { editor.completer.detach(); },
+        "Return": function(editor) { return editor.completer.insertMatch(); },
+        "Shift-Return": function(editor) { editor.completer.insertMatch(true); },
+        "Tab": function(editor) {
+            var result = editor.completer.insertMatch();
+            if (!result && !editor.tabstopManager)
+                editor.completer.goTo("down");
+            else
+                return result;
+        },
+
+        "PageUp": function(editor) { editor.completer.popup.gotoPageUp(); },
+        "PageDown": function(editor) { editor.completer.popup.gotoPageDown(); }
+    };
+
+    this.gatherCompletions = function(editor, callback) {
+        var session = editor.getSession();
+        var pos = editor.getCursorPosition();
+
+        var line = session.getLine(pos.row);
+        var prefix = util.retrievePrecedingIdentifier(line, pos.column);
+
+        this.base = session.doc.createAnchor(pos.row, pos.column - prefix.length);
+        this.base.$insertRight = true;
+
+        var matches = [];
+        var total = editor.completers.length;
+        editor.completers.forEach(function(completer, i) {
+            completer.getCompletions(editor, session, pos, prefix, function(err, results) {
+                if (!err)
+                    matches = matches.concat(results);
+                var pos = editor.getCursorPosition();
+                var line = session.getLine(pos.row);
+                callback(null, {
+                    prefix: util.retrievePrecedingIdentifier(line, pos.column, results[0] && results[0].identifierRegex),
+                    matches: matches,
+                    finished: (--total === 0)
+                });
+            });
+        });
+        return true;
+    };
+
+    this.showPopup = function(editor) {
+        if (this.editor)
+            this.detach();
+
+        this.activated = true;
+
+        this.editor = editor;
+        if (editor.completer != this) {
+            if (editor.completer)
+                editor.completer.detach();
+            editor.completer = this;
+        }
+
+        editor.on("changeSelection", this.changeListener);
+        editor.on("blur", this.blurListener);
+        editor.on("mousedown", this.mousedownListener);
+        editor.on("mousewheel", this.mousewheelListener);
+
+        this.updateCompletions();
+    };
+
+    this.updateCompletions = function(keepPopupPosition) {
+        if (keepPopupPosition && this.base && this.completions) {
+            var pos = this.editor.getCursorPosition();
+            var prefix = this.editor.session.getTextRange({start: this.base, end: pos});
+            if (prefix == this.completions.filterText)
+                return;
+            this.completions.setFilter(prefix);
+            if (!this.completions.filtered.length)
+                return this.detach();
+            if (this.completions.filtered.length == 1
+            && this.completions.filtered[0].value == prefix
+            && !this.completions.filtered[0].snippet)
+                return this.detach();
+            this.openPopup(this.editor, prefix, keepPopupPosition);
+            return;
+        }
+        var _id = this.gatherCompletionsId;
+        this.gatherCompletions(this.editor, function(err, results) {
+            var detachIfFinished = function() {
+                if (!results.finished) return;
+                return this.detach();
+            }.bind(this);
+
+            var prefix = results.prefix;
+            var matches = results && results.matches;
+
+            if (!matches || !matches.length)
+                return detachIfFinished();
+            if (prefix.indexOf(results.prefix) !== 0 || _id != this.gatherCompletionsId)
+                return;
+
+            this.completions = new FilteredList(matches);
+
+            if (this.exactMatch)
+                this.completions.exactMatch = true;
+
+            this.completions.setFilter(prefix);
+            var filtered = this.completions.filtered;
+            if (!filtered.length)
+                return detachIfFinished();
+            if (filtered.length == 1 && filtered[0].value == prefix && !filtered[0].snippet)
+                return detachIfFinished();
+            if (this.autoInsert && filtered.length == 1 && results.finished)
+                return this.insertMatch(filtered[0]);
+
+            this.openPopup(this.editor, prefix, keepPopupPosition);
+        }.bind(this));
+    };
+
+    this.cancelContextMenu = function() {
+        this.editor.$mouseHandler.cancelContextMenu();
+    };
+
+    this.updateDocTooltip = function() {
+        var popup = this.popup;
+        var all = popup.data;
+        var selected = all && (all[popup.getHoveredRow()] || all[popup.getRow()]);
+        var doc = null;
+        if (!selected || !this.editor || !this.popup.isOpen)
+            return this.hideDocTooltip();
+        this.editor.completers.some(function(completer) {
+            if (completer.getDocTooltip)
+                doc = completer.getDocTooltip(selected);
+            return doc;
+        });
+        if (!doc)
+            doc = selected;
+
+        if (typeof doc == "string")
+            doc = {docText: doc}
+        if (!doc || !(doc.docHTML || doc.docText))
+            return this.hideDocTooltip();
+        this.showDocTooltip(doc);
+    };
+
+    this.showDocTooltip = function(item) {
+        if (!this.tooltipNode) {
+            this.tooltipNode = dom.createElement("div");
+            this.tooltipNode.className = "ace_tooltip ace_doc-tooltip";
+            this.tooltipNode.style.margin = 0;
+            this.tooltipNode.style.pointerEvents = "auto";
+            this.tooltipNode.tabIndex = -1;
+            this.tooltipNode.onblur = this.blurListener.bind(this);
+        }
+
+        var tooltipNode = this.tooltipNode;
+        if (item.docHTML) {
+            tooltipNode.innerHTML = item.docHTML;
+        } else if (item.docText) {
+            tooltipNode.textContent = item.docText;
+        }
+
+        if (!tooltipNode.parentNode)
+            document.body.appendChild(tooltipNode);
+        var popup = this.popup;
+        var rect = popup.container.getBoundingClientRect();
+        tooltipNode.style.top = popup.container.style.top;
+        tooltipNode.style.bottom = popup.container.style.bottom;
+
+        if (window.innerWidth - rect.right < 320) {
+            tooltipNode.style.right = window.innerWidth - rect.left + "px";
+            tooltipNode.style.left = "";
+        } else {
+            tooltipNode.style.left = (rect.right + 1) + "px";
+            tooltipNode.style.right = "";
+        }
+        tooltipNode.style.display = "block";
+    };
+
+    this.hideDocTooltip = function() {
+        this.tooltipTimer.cancel();
+        if (!this.tooltipNode) return;
+        var el = this.tooltipNode;
+        if (!this.editor.isFocused() && document.activeElement == el)
+            this.editor.focus();
+        this.tooltipNode = null;
+        if (el.parentNode)
+            el.parentNode.removeChild(el);
+    };
+
+}).call(Autocomplete.prototype);
+
+Autocomplete.startCommand = {
+    name: "startAutocomplete",
+    exec: function(editor) {
+        if (!editor.completer)
+            editor.completer = new Autocomplete();
+        editor.completer.autoInsert = false;
+        editor.completer.autoSelect = true;
+        editor.completer.showPopup(editor);
+        editor.completer.cancelContextMenu();
+    },
+    bindKey: "Ctrl-Space|Ctrl-Shift-Space|Alt-Space"
+};
+
+var FilteredList = function(array, filterText, mutateData) {
+    this.all = array;
+    this.filtered = array;
+    this.filterText = filterText || "";
+    this.exactMatch = false;
+};
+(function(){
+    this.setFilter = function(str) {
+        if (str.length > this.filterText && str.lastIndexOf(this.filterText, 0) === 0)
+            var matches = this.filtered;
+        else
+            var matches = this.all;
+
+        this.filterText = str;
+        matches = this.filterCompletions(matches, this.filterText);
+        matches = matches.sort(function(a, b) {
+            return b.exactMatch - a.exactMatch || b.score - a.score;
+        });
+        var prev = null;
+        matches = matches.filter(function(item){
+            var caption = item.snippet || item.caption || item.value;
+            if (caption === prev) return false;
+            prev = caption;
+            return true;
+        });
+
+        this.filtered = matches;
+    };
+    this.filterCompletions = function(items, needle) {
+        var results = [];
+        var upper = needle.toUpperCase();
+        var lower = needle.toLowerCase();
+        loop: for (var i = 0, item; item = items[i]; i++) {
+            var caption = item.value || item.caption || item.snippet;
+            if (!caption) continue;
+            var lastIndex = -1;
+            var matchMask = 0;
+            var penalty = 0;
+            var index, distance;
+
+            if (this.exactMatch) {
+                if (needle !== caption.substr(0, needle.length))
+                    continue loop;
+            }else{
+                for (var j = 0; j < needle.length; j++) {
+                    var i1 = caption.indexOf(lower[j], lastIndex + 1);
+                    var i2 = caption.indexOf(upper[j], lastIndex + 1);
+                    index = (i1 >= 0) ? ((i2 < 0 || i1 < i2) ? i1 : i2) : i2;
+                    if (index < 0)
+                        continue loop;
+                    distance = index - lastIndex - 1;
+                    if (distance > 0) {
+                        if (lastIndex === -1)
+                            penalty += 10;
+                        penalty += distance;
+                    }
+                    matchMask = matchMask | (1 << index);
+                    lastIndex = index;
+                }
+            }
+            item.matchMask = matchMask;
+            item.exactMatch = penalty ? 0 : 1;
+            item.score = (item.score || 0) - penalty;
+            results.push(item);
+        }
+        return results;
+    };
+}).call(FilteredList.prototype);
+
+exports.Autocomplete = Autocomplete;
+exports.FilteredList = FilteredList;
+
+});
+
+ace.define("ace/tern/tern_server",["require","exports","module","ace/range","ace/lib/dom"], function (require, exports, module) {
+    "use strict";
+    var TernServer = function (options) {
         var self = this;
-
-        //merge options with defaults
         this.options = options || {};
-
-        //default plugins
         var plugins = this.options.plugins || (this.options.plugins = {});
         if (!plugins.hasOwnProperty('doc_comment')) plugins.doc_comment = {};
         if (!plugins.doc_comment.hasOwnProperty('fullDocs')) plugins.doc_comment.fullDocs = true; //default to true if not specified
-
-        //default switchToDoc
-        if (!this.options.hasOwnProperty('switchToDoc')) this.options.switchToDoc = function(name, start) {
+        if (!this.options.hasOwnProperty('switchToDoc')) this.options.switchToDoc = function (name, start) {
             console.log('tern.switchToDoc called but not defined (need to specify this in options to enable jumpting between documents). name=' + name + '; start=', start);
         };
-
-        //default defs
         if (!this.options.hasOwnProperty('defs')) this.options.defs = [ /*'jquery',*/ 'browser', 'ecma5'];
-
-        //default worker
         if (!this.options.hasOwnProperty('useWorker')) this.options.useWorker = true;
         if (this.options.useWorker) {
             this.server = new WorkerServer(this, this.options.workerClass);
         }
         else {
-            //HACK: defs are hard coded into worker-tern.js file
-            //when using worker, this is handled in the worker-tern.js file instead of here
             if (this.options.defs && this.options.defs.length > 0) {
                 var tmp = [];
                 for (var i = 0; i < this.options.defs.length; i++) {
@@ -309,9 +1779,9 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
                 }
                 this.options.defs = tmp;
             }
-        
+
             this.server = new tern.Server({
-                getFile: function(name, c) {
+                getFile: function (name, c) {
                     return getFile(self, name, c);
                 },
                 async: true,
@@ -321,40 +1791,18 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
         }
 
         this.docs = Object.create(null);
-        /**
-         * Fired from editor.onChange
-         * @param {object} change - change event from editor
-         * @param {editor} doc
-         */
-        this.trackChange = function(change, doc) {
+        this.trackChange = function (change, doc) {
             trackChange(self, doc, change);
         };
         this.cachedArgHints = null;
         this.activeArgHints = null;
         this.jumpStack = [];
-        /**
-         * 9.30.2014- set when mode changes and tern is enabled, this is the built in ace text completor;
-         * Giving tern control of the built in text completor allows tern to fall back to it when no tern completions are found, and it allows tern to include text completions in results when user fires auto complete twice within a second;
-         */
         this.aceTextCompletor = null;
-        /**
-         * 9.30.2014- set every time auto complete is fired;
-         * used to include all completions if fired twice in one second
-         */
         this.lastAutoCompleteFireTime = null;
-        /**
-         * {number} for tern queries: When the timeout field is set, it should contain a number, which is interpreted as the maximum amount of milliseconds to work (CPU work, ignoring I/O) on this request before returning with a timeout error.
-         */
         this.queryTimeout = 3000;
         if (this.options.queryTimeout && !isNaN(parseInt(this.options.queryTimeout))) this.queryTimeout = parseInt(this.options.queryTimeout);
     };
-
-
-    //#region helpers
-    /**
-     * returns line,ch posistion
-     */
-    var Pos = function(line, ch) {
+    var Pos = function (line, ch) {
         return {
             "line": line,
             "ch": ch
@@ -365,72 +1813,64 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
     var aceCommands = {
         ternJumpToDef: {
             name: "ternJumpToDef",
-            exec: function(editor) {
+            exec: function (editor) {
                 editor.ternServer.jumpToDef(editor);
             },
             bindKey: "Alt-."
         },
         ternJumpBack: {
             name: "ternJumpBack",
-            exec: function(editor) {
+            exec: function (editor) {
                 editor.ternServer.jumpBack(editor);
             },
             bindKey: "Alt-,"
         },
         ternShowType: {
             name: "ternShowType",
-            exec: function(editor) {
+            exec: function (editor) {
                 editor.ternServer.showType(editor);
             },
             bindKey: "Ctrl-I"
         },
         ternFindRefs: {
             name: "ternFindRefs",
-            exec: function(editor) {
+            exec: function (editor) {
                 editor.ternServer.findRefs(editor);
             },
             bindKey: "Ctrl-E"
         },
         ternRename: {
             name: "ternRename",
-            exec: function(editor) {
+            exec: function (editor) {
                 editor.ternServer.rename(editor);
             },
             bindKey: "Ctrl-Shift-E"
         },
         ternRefresh: {
             name: "ternRefresh",
-            exec: function(editor) {
+            exec: function (editor) {
                 editor.ternServer.refreshDoc(editor);
             },
             bindKey: "Alt-R"
         }
     };
-    /** @type {bool} set to true log info about completions */
     var debugCompletions = false;
-    //#endregion
 
 
     TernServer.prototype = {
-        bindAceKeys: function(editor) {
+        bindAceKeys: function (editor) {
             for (var p in aceCommands) {
                 var obj = aceCommands[p];
                 editor.commands.addCommand(obj);
             }
         },
-        /**
-         * Add a file to tern server
-         * @param {string} name = name of file
-         * @param {string} doc = contents of the file OR the entire ace editor? (in code mirror it adds the CodeMirror.Doc, which is basically the whole editor)
-         */
-        addDoc: function(name, doc) {
+        addDoc: function (name, doc) {
             var data = {
                 doc: doc,
                 name: name,
                 changed: null
             };
             var value = '';
-            //GHETTO: hack to let a plain string work as a document for auto complete only. need to comeback and fix (make it add a editor or editor session from the string)
             if (doc.constructor.name === 'String') {
                 value = doc;
             }
@@ -441,11 +1881,7 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
             this.server.addFile(name, value);
             return this.docs[name] = data;
         },
-        /**
-         * Remove a file from tern server
-         * @param {string} name = name of file
-         */
-        delDoc: function(name) {
+        delDoc: function (name) {
             var found = this.docs[name];
             if (!found) return;
             try { //stop tracking changes
@@ -455,122 +1891,64 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
             delete this.docs[name];
             this.server.delFile(name);
         },
-        /**
-         * Call this right before changing to a different doc, it will close tooltips and if the document changed, it will send the latest version to the tern sever
-         */
-        hideDoc: function(name) {
+        hideDoc: function (name) {
             closeAllTips();
             var found = this.docs[name];
             if (found && found.changed) sendDoc(this, found);
         },
-        /**
-         * Refreshes current document on tern server (forces send, useful for debugging as ideally this should not be needed)
-         */
-        refreshDoc: function(editor) {
+        refreshDoc: function (editor) {
             var doc = findDoc(this, editor);
             sendDoc(this, doc);
-
-            //delete all docs other than current and reload refs (HACK- this should be handled in a better way and need to figure out how it works with requireJS and how it works when all open documentes may be added to server?)
-            /* added this 11.25.2014 but it broke other things with the current doc... needs more work as the below algorithm is not correct
-            for (var p in this.docs) {
-                if(p !== doc){
-                  this.delDoc(p);
-                }
-            }
-            loadExplicitVsRefs(this, editor);*/
-
-            //tooltip
             var el = document.createElement('span');
             el.setAttribute('style', 'color:green;');
             el.innerHTML = "Tern document refreshed";
             tempTooltip(editor, el, 1000);
         },
-        /**
-         * Gets completions to display in editor when Ctrl+Space is pressed; This is called by
-         * CodeMirror equivalent: complete()
-         */
-        getCompletions: function(editor, session, pos, prefix, callback) {
+        getCompletions: function (editor, session, pos, prefix, callback) {
             getCompletions(this, editor, session, pos, prefix, callback);
         },
-        /**
-         * Shows javascript type (example: function, string, custom object, etc..) at current cursor location
-         */
-        showType: function(editor, pos, calledFromCursorActivity) {
+        showType: function (editor, pos, calledFromCursorActivity) {
             showType(this, editor, pos, calledFromCursorActivity);
         },
-        /**
-         * Shows arugments hints as tooltip at current cursor location if inside of function call
-         */
-        updateArgHints: function(editor) {
+        updateArgHints: function (editor) {
             updateArgHints(this, editor);
         },
-        /**
-         * Jumps to definition of object that the cursor is currently on
-         */
-        jumpToDef: function(editor) {
+        jumpToDef: function (editor) {
             jumpToDef(this, editor);
         },
-        /**
-         * Jumps to previos location after using jumpToDef
-         */
-        jumpBack: function(editor) {
+        jumpBack: function (editor) {
             jumpBack(this, editor);
         },
-        /**
-         * Opens prompt to rename current variable and update references
-         */
-        rename: function(editor) {
+        rename: function (editor) {
             rename(this, editor);
         },
-        /**
-         * Finds references to variable at current cursor location and shows tooltip
-         */
-        findRefs: function(editor) {
+        findRefs: function (editor) {
             findRefs(this, editor);
         },
-        /**
-         * Sends request to tern server
-         * @param {function} c - callback(error,data)
-         * @param {bool} [forcePushChangedfile=false] - hack, force push large file change
-         */
-        request: function(editor, query, c, pos, forcePushChangedfile) {
+        request: function (editor, query, c, pos, forcePushChangedfile) {
             var self = this;
             var doc = findDoc(this, editor);
             var request = buildRequest(this, doc, query, pos, forcePushChangedfile);
 
-            this.server.request(request, function(error, data) {
+            this.server.request(request, function (error, data) {
                 if (!error && self.options.responseFilter) data = self.options.responseFilter(doc, query, request, error, data);
                 c(error, data);
             });
         },
-        /**
-         * returns true if tern should be enabled at current mode (checks for javascript mode or inside of javascript in html mode)
-         */
-        enabledAtCurrentLocation: function(editor) {
+        enabledAtCurrentLocation: function (editor) {
             return inJavascriptMode(editor);
         },
-        /**
-         * gets a call posistion {start: {line,ch}, argpos: number} if editor's cursor location is currently in a function call, otherwise returns undefined
-         * @param {row,column} [pos] optionally pass this to check for call at a posistion other than current cursor posistion
-         */
-        getCallPos: function(editor, pos) {
+        getCallPos: function (editor, pos) {
             return getCallPos(editor, pos);
         },
-        /**
-         * (ghetto and temporary). Call this when current doc changes, it will delete all docs on the server then add current doc
-         */
-        docChanged: function(editor) {
+        docChanged: function (editor) {
             var sf = this;
-
-            //delete all docs
             for (var p in this.docs) {
                 this.delDoc(p);
             }
 
-            var finish = function(name) {
+            var finish = function (name) {
                 sf.addDoc(name, editor); //add current doc
-
-                //console.log('checking for VS refs because Doc changed... DISABLE when done with adding correct editorSession interface');
                 loadExplicitVsRefs(sf, editor);
             };
 
@@ -581,26 +1959,11 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
                 finish('current'); //name the file current
             }
         },
-        /**
-         * @returns {string} current file name using options.getCurrentFileName or 'current''
-         */
-        /*getCurrentFileName: function(){
-            if(this.options.getCurrentFileName){
-                this.options.getCurrentFileName(finish);
-            }
-        },*/
-        /**
-         * (ghetto) (for web worker only) needed to update plugins and options- tells web worker to kill current tern server and start over as options and plugins can only be set during initialization
-         * Need to call this after changing any plugins
-         */
-        restart: function() {
+        restart: function () {
             if (!this.options.useWorker) return;
             this.server.restart(this);
         },
-        /**
-         * sends debug message to worker (TEMPORARY) for testing
-         */
-        debug: function(message) {
+        debug: function (message) {
             if (!message) {
                 console.log('debug commands: files, filecontents');
                 return;
@@ -608,22 +1971,12 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
             if (!this.options.useWorker) return;
             this.server.sendDebug(message);
         },
-        /** @param {bool} value - set to true to log debug info about get completions */
-        debugCompletions: function(value) {
+        debugCompletions: function (value) {
             if (value) debugCompletions = true;
             else debugCompletions = false;
         },
     };
     exports.TernServer = TernServer;
-    //#endregion
-
-
-    //#region TernServerPrivate
-    /**
-     * Resolves file path if options.resolveFilePath function is set;
-     * This is needed for ChromeApp as relative paths are weight with the Chrome file system api;
-     * @param {function} cb - callback(resolvedName); will be executed with passed name if resolveFilePath option is not passed
-     */
     function resolveFilePath(ts, name, cb) {
         if (ts.options.resolveFilePath) {
             ts.options.resolveFilePath(name, cb);
@@ -632,43 +1985,29 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
             cb(name); //return original name
         }
     }
-    /**
-     * gets file (called by requirejs plugin and possibly other places)
-     */
     function getFile(ts, name, cb) {
-        //DBG(arguments,true); - example : util/dom2.js
-        //console.log('getFile - name:', name);
         var buf = ts.docs[name];
         if (buf) cb(docValue(ts, buf));
         else if (ts.options.getFile) ts.options.getFile(name, cb);
         else cb(null);
     }
-    /**
-     * Finds document on the tern server
-     * @param {TernServer} ts
-     * @param  doc -(in CM, this is a CM doc object)
-     * @param  [name] (in CM, this was undefined in my tests)
-     */
     function findDoc(ts, doc, name) {
         for (var n in ts.docs) {
             var cur = ts.docs[n];
             if (cur.doc == doc) return cur;
         }
-        //still going: no doc found, add a new one
-        if (!name) for (var i = 0;; ++i) {
-            n = "[doc" + (i || "") + "]"; //name not passed for new doc, so auto generate it
-            if (!ts.docs[n]) {
-                name = n;
-                break;
+        if (!name)
+            for (var i = 0;; ++i) {
+                n = "[doc" + (i || "") + "]"; //name not passed for new doc, so auto generate it
+                if (!ts.docs[n]) {
+                    name = n;
+                    break;
+                }
             }
-        }
         return ts.addDoc(name, doc);
     }
-    /**
-     * Converts ace CursorPosistion {row,column} to tern posistion {line,ch}
-     */
     function toTernLoc(pos) {
-        if (typeof(pos.row) !== 'undefined') {
+        if (typeof (pos.row) !== 'undefined') {
             return {
                 line: pos.row,
                 ch: pos.column
@@ -676,9 +2015,6 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
         }
         return pos;
     }
-    /**
-     * Converts tern location {line,ch} to ace posistion {row,column}
-     */
     function toAceLoc(pos) {
         if (pos.line) {
             return {
@@ -688,16 +2024,7 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
         }
         return pos;
     }
-    /**
-     * Build request to tern server
-     * @param {TernDoc} doc - {doc: AceEditor, name: name of document, changed: {from:int, to:int}}
-     * @param {bool} [forcePushChangedfile=false] - hack, force push large file change
-     */
     function buildRequest(ts, doc, query, pos, forcePushChangedfile) {
-        /*
-         * the doc passed here is {changed:null, doc:Editor, name: "[doc]"}
-         * not the same as editor.getSession().getDocument() which is: {$lines: array}  (the actual document content
-         */
         var files = [],
             offsetLines = 0,
             allowFragments = !query.fullDocs;
@@ -710,12 +2037,7 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
             };
         }
 
-        // lineCharPositions makes the tern result a position instead of a file offset integer. From Tern: Offsets into a file can be either (zero-based) integers, or {line, ch} objects, where both line and ch are zero-based integers. Offsets returned by the server will be integers, unless the lineCharPositions field in the request was set to true, in which case they will be {line, ch} objects.
-
         query.lineCharPositions = true;
-        //build the query start and end based on current cusor location of editor
-
-        //NOTE: DO NOT use '===' for query.end == null below as it returns a different result!
         if (query.end == null) { //this is null for get completions
             var currentSelection = doc.doc.getSelectionRange(); //returns range: start{row,column}, end{row,column}
             query.end = toTernLoc(pos || currentSelection.end);
@@ -727,9 +2049,6 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
         var startPos = query.start || query.end;
 
         if (doc.changed) {
-
-            //forcePushChangedfile && = HACK- for some reason the definition is not working properly with large files while pushing only a fragment... need to fix this! until then, we are just pushing the whole file, which is very inefficient
-            //doc > 250 lines & doNot allow fragments & less than 100 lines changed and something else....
             if (!forcePushChangedfile && doc.doc.session.getLength() > bigDoc && allowFragments !== false && doc.changed.to - doc.changed.from < 100 && doc.changed.from <= startPos.line && doc.changed.to > query.end.line) {
                 files.push(getFragmentAround(doc, startPos, query.end));
                 query.file = "#0";
@@ -750,8 +2069,6 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
         else {
             query.file = doc.name;
         }
-
-        //push changes of any docs on server that are NOT this doc so that they are up to date for tihs request
         for (var name in ts.docs) {
             var cur = ts.docs[name];
             if (cur.changed && cur != doc) {
@@ -763,16 +2080,13 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
                 cur.changed = null;
             }
         }
-        
+
         return {
             query: query,
             files: files,
             timeout: ts.queryTimeout
         };
     }
-    /**
-     * Used to get a fragment of the current document for updating the documents changes to push to the tern server (more efficient than pushing entire document on each change)
-     */
     function getFragmentAround(data, start, end) {
         var editor = data.doc;
         var minIndent = null,
@@ -791,10 +2105,11 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
         if (minLine == null) minLine = min;
         var max = Math.min(editor.session.getLength() - 1, end.line + 20);
         if (minIndent == null || minIndent == countColumn(editor.session.getLine(start.line), null, tabSize)) endLine = max;
-        else for (endLine = end.line + 1; endLine < max; ++endLine) {
-            var indent = countColumn(editor.session.getLine(endLine), null, tabSize);
-            if (indent <= minIndent) break;
-        }
+        else
+            for (endLine = end.line + 1; endLine < max; ++endLine) {
+                var indent = countColumn(editor.session.getLine(endLine), null, tabSize);
+                if (indent <= minIndent) break;
+            }
         var from = Pos(minLine, 0);
 
         return {
@@ -807,9 +2122,6 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
             })
         };
     }
-    /**
-     * Copied from CodeMirror source, used in getFragmentAround. Not exactly sure what this does
-     */
     function countColumn(string, end, tabSize, startIndex, startValue) {
         if (end == null) {
             end = string.search(/[^\s\u00a0]/);
@@ -821,18 +2133,11 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
         }
         return n;
     }
-    /**
-     * Gets the text for a doc
-     * @param {TernDoc} doc - {doc: AceEditor, name: name of document, changed: {from:int, to:int}}
-     */
     function docValue(ts, doc) {
         var val = doc.doc.getValue();
         if (ts.options.fileFilter) val = ts.options.fileFilter(val, doc.name, doc.doc);
         return val;
     }
-    /**
-     * Gets a class name for icon based on type for completion popup
-     */
     function typeToIcon(type) {
         var suffix;
         if (type == "?") suffix = "unknown";
@@ -842,15 +2147,9 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
         else suffix = "object";
         return cls + "completion " + cls + "completion-" + suffix;
     }
-    //popup on select cant be bound until its created. This tracks if its bound
     var popupSelectBound = false;
-    /**
-     * called to get completions, equivalent to cm.tern.hint(ts,cm,c)
-     * NOTE: current implmentation of this has this method being called by the language_tools as a completor
-     */
     function getCompletions(ts, editor, session, pos, prefix, callback) {
-        //9.30.2014- if auto complete fired twice in threshold (defualt 1 second, TODO: add setting for this), then include all text completions; The time is from the last time auto complete finished gettin completions to the time this event was fired
-        var autoCompleteFiredTwiceInThreshold = function() {
+        var autoCompleteFiredTwiceInThreshold = function () {
             try {
                 var t = ts.lastAutoCompleteFireTime;
                 if (!t) {
@@ -870,7 +2169,6 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
         if (!forceEnableAceTextCompletor) {
             var t = getCurrentToken(editor);
             if (t && t.type && t.type.indexOf('comment') !== -1) forceEnableAceTextCompletor = true;
-            //get all completions if user currently typing in a comment
         }
 
         var groupName = '';
@@ -880,187 +2178,147 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
             console.time('get completions from tern server');
         }
         ts.request(editor, {
-            type: "completions",
-            types: true,
-            origins: true,
-            docs: true,
-            filter: false,
-            omitObjectPrototype: false,
-            sort: false,
-            includeKeywords: true,
-            guess: true,
-            expandWordForward: true
-        },
+                type: "completions",
+                types: true,
+                origins: true,
+                docs: true,
+                filter: false,
+                omitObjectPrototype: false,
+                sort: false,
+                includeKeywords: true,
+                guess: true,
+                expandWordForward: true
+            },
 
-        function(error, data) {
-            if (debugCompletions) console.timeEnd('get completions from tern server');
-            if (error) {
-                return showError(ts, editor, error);
-            }
-            //map ternCompletions to correct format
-            var ternCompletions = data.completions.map(function(item) {
-                return {
-                    /*add space before icon class so Ace Prefix doesnt mess with it*/
-                    iconClass: " " + (item.guess ? cls + "guess" : typeToIcon(item.type)),
-                    doc: item.doc,
-                    type: item.type,
-                    caption: item.name,
-                    value: item.name,
-                    score: 99999,
-                    /*replace gets file name from path tomake it shorter while showing in popup*/
-                    meta: item.origin ? item.origin.replace(/^.*[\\\/]/, '') : "tern"
-                };
-            });
-
-
-            //#region OtherCompletions
-            if (debugCompletions) console.time('get and merge other completions');
-
-            var otherCompletions = [];
-            //if basic auto completion is on, then get keyword completions that are not found in tern results
-            if (editor.getOption('enableBasicAutocompletion') === true) {
-                try {
-                    otherCompletions = editor.session.$mode.getCompletions();
+            function (error, data) {
+                if (debugCompletions) console.timeEnd('get completions from tern server');
+                if (error) {
+                    return showError(ts, editor, error);
                 }
-                catch (ex) {
-                    //TODO: this throws error when using tern in script tags in mixed html mode- need to fix this(not critical, but missing keyword completions when using html mixed)
-                }
-            }
-
-
-            if ((forceEnableAceTextCompletor || ternCompletions.length === 0) && ts.aceTextCompletor) {
-                if (debugCompletions) console.time('aceTextCompletor');
-                var textCompletions = [];
-                //9.30.2014- sometimes tern just fails with complex javascript.. If this is the case, lets use the built in ace text completor to get information instead of the more advanced 'local strings' below;
-                //this is only used when tern fails as it will contain stuff that tern should already contain, but when tern fails this stuff is all missing so get it how ever we can
-                //note that this can easily take 500ms to get these completions and merge them (merge is fast, getting text completions is very slow for lage files!)
-                try {
-                    ts.aceTextCompletor.getCompletions(editor, session, pos, prefix, function(error, data) {
-                        textCompletions = data.map(function(item) {
-                            return {
-                                doc: item.doc,
-                                type: item.type,
-                                caption: item.name,
-                                value: item.name,
-                                /*score: -1*/
-                                meta: 'aceTextCompletor'
-                            };
-                        });
-                        //returns true if passed value already exists in otherCompletions
-                        var otherCompletionsContains = function(value, minLength) {
-                            value = value.toLowerCase().trim();
-                            if (value.length < 2) {
-                                //dont want 1 character completions!
-                                return true;
-                            }
-                            var isDupe = false;
-                            for (var i = 0; i < otherCompletions.length; i++) {
-                                if (otherCompletions[i].value.toString().toLowerCase() == value) {
-                                    isDupe = true;
-                                    break;
-                                }
-                            }
-                            return isDupe;
-                        };
-
-                        //merge with other completions
-                        for (var z = 0; z < textCompletions.length; z++) {
-                            var item = textCompletions[z];
-                            if (otherCompletionsContains(item.value)) {
-                                continue;
-                            }
-                            otherCompletions.push(item);
-                        }
-                    });
-                }
-                catch (ex) {
-                    showError(ts, editor, 'ace text completor error:' + ex);
-                }
-                //console.log('textCompletions',textCompletions); console.log('otherCompletions',otherCompletions);
-                if (debugCompletions) console.timeEnd('aceTextCompletor');
-            }
-
-            //now merge other completions with tern (tern has priority)
-            //tested on 5,000 line doc with all other completions and takes about ~10ms
-            if (otherCompletions.length > 0) {
-                var mergedCompletions = ternCompletions.slice(); //copy array
-                for (var n = 0; n < otherCompletions.length; n++) {
-                    var b = otherCompletions[n];
-                    var isDuplicate = false;
-                    for (var i = 0; i < ternCompletions.length; i++) {
-                        if (ternCompletions[i].value.toString() === b.value.toString()) {
-                            isDuplicate = true;
-                            break;
-                        }
-                    }
-                    if (!isDuplicate) {
-                        mergedCompletions.push(b);
-                    }
-                }
-                ternCompletions = mergedCompletions.slice();
-            }
-            if (debugCompletions) console.timeEnd('get and merge other completions');
-            //#endregion
-
-
-            //callback goes to the lang tools completor
-            callback(null, ternCompletions);
-
-            if (debugCompletions) console.groupEnd(groupName);
-
-
-            var tooltip = null;
-            //COMEBACK: also need to bind popup close and update (update likely means when the tooltip has to move) (and hoever over items should move tooltip)
-
-            if (!bindPopupSelect()) {
-                popupSelectionChanged(); //call once if popupselect bound exited to show tooltip for first item
-            }
-
-            //binds popup selection change, which cant be done until first time popup is created
-            function bindPopupSelect() {
-                if (popupSelectBound) {
-                    return false;
-                }
-                if (!editor.completer.popup) { //popup not opened yet
-                    setTimeout(bindPopupSelect, 100); //try again in 100ms
-                    return;
-                }
-                editor.completer.popup.on('select', popupSelectionChanged);
-                editor.completer.popup.on('hide', function() {
-                    closeAllTips();
+                var ternCompletions = data.completions.map(function (item) {
+                    return {
+                        iconClass: " " + (item.guess ? cls + "guess" : typeToIcon(item.type)),
+                        doc: item.doc,
+                        type: item.type,
+                        caption: item.name,
+                        value: item.name,
+                        score: 99999,
+                        meta: item.origin ? item.origin.replace(/^.*[\\\/]/, '') : "tern"
+                    };
                 });
-                popupSelectionChanged(); //fire once after first bind
-                popupSelectBound = true; //prevent rebinding
-            }
-            //fired on popup selection change
-            function popupSelectionChanged() {
-                closeAllTips(); //remove(tooltip); //using close all , but its slower, comeback and remove single if its working right
-                //gets data of currently selected completion
-                var data = editor.completer.popup.getData(editor.completer.popup.getRow());
-                if (!data || !data.doc) { //no comments
-                    return;
-                }
-                //make tooltip
-                var node = editor.completer.popup.renderer.getContainerElement();
-                tooltip = makeTooltip(node.getBoundingClientRect().right + window.pageXOffset, node.getBoundingClientRect().top + window.pageYOffset, createInfoDataTip(data, true), editor);
-                tooltip.className += " " + cls + "hint-doc";
-            }
+                if (debugCompletions) console.time('get and merge other completions');
 
-            //9.30.2014- track last time auto complete was fired
-            try {
-                ts.lastAutoCompleteFireTime = new Date().getTime();
-            }
-            catch (ex) {
-                showError(ts, editor, 'error with last autoCompleteFireTime: ' + ex);
-            }
-        });
+                var otherCompletions = [];
+                if (editor.getOption('enableBasicAutocompletion') === true) {
+                    try {
+                        otherCompletions = editor.session.$mode.getCompletions();
+                    }
+                    catch (ex) {
+                    }
+                }
+
+                if ((forceEnableAceTextCompletor || ternCompletions.length === 0) && ts.aceTextCompletor) {
+                    if (debugCompletions) console.time('aceTextCompletor');
+                    var textCompletions = [];
+                    try {
+                        ts.aceTextCompletor.getCompletions(editor, session, pos, prefix, function (error, data) {
+                            textCompletions = data.map(function (item) {
+                                return {
+                                    doc: item.doc,
+                                    type: item.type,
+                                    caption: item.name,
+                                    value: item.name,
+                                    meta: 'aceTextCompletor'
+                                };
+                            });
+                            var otherCompletionsContains = function (value, minLength) {
+                                value = value.toLowerCase().trim();
+                                if (value.length < 2) {
+                                    return true;
+                                }
+                                var isDupe = false;
+                                for (var i = 0; i < otherCompletions.length; i++) {
+                                    if (otherCompletions[i].value.toString().toLowerCase() == value) {
+                                        isDupe = true;
+                                        break;
+                                    }
+                                }
+                                return isDupe;
+                            };
+                            for (var z = 0; z < textCompletions.length; z++) {
+                                var item = textCompletions[z];
+                                if (otherCompletionsContains(item.value)) {
+                                    continue;
+                                }
+                                otherCompletions.push(item);
+                            }
+                        });
+                    }
+                    catch (ex) {
+                        showError(ts, editor, 'ace text completor error:' + ex);
+                    }
+                    if (debugCompletions) console.timeEnd('aceTextCompletor');
+                }
+                if (otherCompletions.length > 0) {
+                    var mergedCompletions = ternCompletions.slice(); //copy array
+                    for (var n = 0; n < otherCompletions.length; n++) {
+                        var b = otherCompletions[n];
+                        var isDuplicate = false;
+                        for (var i = 0; i < ternCompletions.length; i++) {
+                            if (ternCompletions[i].value.toString() === b.value.toString()) {
+                                isDuplicate = true;
+                                break;
+                            }
+                        }
+                        if (!isDuplicate) {
+                            mergedCompletions.push(b);
+                        }
+                    }
+                    ternCompletions = mergedCompletions.slice();
+                }
+                if (debugCompletions) console.timeEnd('get and merge other completions');
+                callback(null, ternCompletions);
+
+                if (debugCompletions) console.groupEnd(groupName);
+
+                var tooltip = null;
+
+                if (!bindPopupSelect()) {
+                    popupSelectionChanged(); //call once if popupselect bound exited to show tooltip for first item
+                }
+                function bindPopupSelect() {
+                    if (popupSelectBound) {
+                        return false;
+                    }
+                    if (!editor.completer.popup) { //popup not opened yet
+                        setTimeout(bindPopupSelect, 100); //try again in 100ms
+                        return;
+                    }
+                    editor.completer.popup.on('select', popupSelectionChanged);
+                    editor.completer.popup.on('hide', function () {
+                        closeAllTips();
+                    });
+                    popupSelectionChanged(); //fire once after first bind
+                    popupSelectBound = true; //prevent rebinding
+                }
+                function popupSelectionChanged() {
+                    closeAllTips(); //remove(tooltip); //using close all , but its slower, comeback and remove single if its working right
+                    var data = editor.completer.popup.getData(editor.completer.popup.getRow());
+                    if (!data || !data.doc) { //no comments
+                        return;
+                    }
+                    var node = editor.completer.popup.renderer.getContainerElement();
+                    tooltip = makeTooltip(node.getBoundingClientRect().right + window.pageXOffset, node.getBoundingClientRect().top + window.pageYOffset, createInfoDataTip(data, true), editor);
+                    tooltip.className += " " + cls + "hint-doc";
+                }
+                try {
+                    ts.lastAutoCompleteFireTime = new Date().getTime();
+                }
+                catch (ex) {
+                    showError(ts, editor, 'error with last autoCompleteFireTime: ' + ex);
+                }
+            });
     }
-    /**
-     * shows type/definition of object at current cursor location via tooltip
-     * @param {bool} calledFromCursorActivity - TODO: add binding on cursor activity to call this method with this param=true to auto show type for functions only;
-     *
-     * @note: this first performs a 'type' request, and if the result of the type request is not a function, (meaning its a native type like number,date, etc...) then this will do another request for 'definition' that includes the comments for the object. The second request will be appended to the first request to give us both the type and definition information
-     */
     function showType(ts, editor, pos, calledFromCursorActivity) {
         if (calledFromCursorActivity) { //check if currently in call, if so, then exit
             if (editor.completer && editor.completer.popup && editor.completer.popup.isOpen) return;
@@ -1071,16 +2329,7 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
                 return;
             }
         }
-
-        /**
-         * handles result of request
-         * @param {object} data - result of request (can be either a 'type' or 'definition' request)
-         * @param {object} typeData - result of request 'type' request prior to to this request (if 2nd request, then this is a data request)
-         *
-         * @note a type request data is: {doc,[origin(only for fn)],exprName,name,type,url} - the doc/url here are uesless for non function types as they are for native javascript types
-         * @note a definition request data is: {doc,origin,context,contextOffset,start,end,file}
-         */
-        var cb = function(error, data, typeData) {
+        var cb = function (error, data, typeData) {
             var tip = '';
             if (error) {
                 if (calledFromCursorActivity) {
@@ -1093,7 +2342,6 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
             }
             else {
                 if (calledFromCursorActivity) {
-                    //if called from cursor activity, then this is less important so dont show unless something meaning full
                     if (data.hasOwnProperty('guess') && data.guess === true) return; //dont show guesses on auto activity as they are not accurate
                     if (data.type == "?" || data.type == "string" || data.type == "number" || data.type == "bool" || data.type == "date" || data.type == "fn(document: ?)" || data.type == "fn()") {
                         return;
@@ -1106,17 +2354,15 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
                         return;
                     }
                     if (data.type.toString().length > 1 && data.type.toString().substr(0, 2) !== 'fn') {
-                        var innerCB = function(error, definitionData) {
+                        var innerCB = function (error, definitionData) {
                             cb(error, definitionData, data);
                         };
-                        //type is not function, which means this returned relatively useless information, so lets try getting definition
                         ts.request(editor, "definition", innerCB, pos, false, null);
                         return;
                     }
                 }
                 else { //data is a definition request
                     if (typeData && typeData.hasOwnProperty('type')) {
-                        //typeData passed from prior callback, merge data to get most complete results for tooltip
                         data.type = typeData.type;
                         data.name = typeData.name;
                         data.exprName = typeData.exprName;
@@ -1124,33 +2370,16 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
                 }
             }
             tip = createInfoDataTip(data, true);
-
-            //10ms timeout because jumping the cusor around alot often causes the reported cusor posistion to be the last posistion it was in instaed of its current posistion
-            setTimeout(function() {
+            setTimeout(function () {
                 var place = getCusorPosForTooltip(editor);
-                // setTimeout(function(){console.log('place after 1ms', getCusorPosForTooltip(editor));},1);
                 makeTooltip(place.left, place.top, tip, editor, true); //tempTooltip(editor, tip, -1); - was temp tooltip.. TODO: add temptooltip fn
             }, 10);
         };
 
         ts.request(editor, "type", cb, pos, !calledFromCursorActivity);
     }
-    /**
-     * @returns {element} for tooltip from data
-     * @param {object} data - info about an object from tern
-     * @param {string} [data.name] - name of object
-     * @param {string} [data.doc] - comments (or documentation)
-     * @param {string} [data.url] - url to info about object for creating link
-     * @param {string} [data.origin] - source name of the object
-     * @param {object[]} [data.params] - result of parseJsDocParams(data.doc) to prevent re-parsing
-     * @param {object [data.fnArgs] - result of parseFnType(data.type) to prevent re-parsing
-     * @param {bool} [includeType=false] - pass true to include object type (which is small bold part at top of tip), will only be included if jsDoc params could not be parsed
-     * @param {int} [activeArg] pass posistion of active argument if in arg hints (fist arg is 0)
-     */
     function createInfoDataTip(data, includeType, activeArg) {
-        //console.log('data', data, 'includeType', includeType, 'parseFnType(data.type)', parseFnType(data.type));
-        //TODO: add links in tooltip: jumpto, find refs
-        tip = elt("span", null);
+        var tip = elt("span", null);
 
         var d = data.doc;
         var params = data.params || parseJsDocParams(d); //parse params
@@ -1158,12 +2387,7 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
         if (includeType) {
             var fnArgs = data.fnArgs ? data.fnArgs : data.type ? parseFnType(data.type) : null; //will be null if parseFnType detects that this is not a function
             if (fnArgs) {
-                /**
-                 * gets param info from comments or tern (prefers comments), returns null or empty array if not found (empty array if getChildren=true)
-                 * @param {object} arg - name and type
-                 * @param {bool} getChildren - if true, will return array of child params
-                 */
-                var getParam = function(arg, getChildren) {
+                var getParam = function (arg, getChildren) {
                     if (params === null) return null;
                     if (!arg.name) return null;
                     var children = [];
@@ -1182,10 +2406,7 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
                     if (getChildren === true) return children;
                     return null;
                 };
-                /**
-                 * gets name string for param that includes default value and optional
-                 */
-                var getParamDetailedName = function(param) {
+                var getParamDetailedName = function (param) {
                     var name = param.name;
                     if (param.optional === true) {
                         if (param.defaultValue) {
@@ -1197,7 +2418,6 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
                     }
                     return name;
                 };
-                //use detailed argHints if called from argHints (activeArg is number) OR there are no params passed from js doc (which means we will let tern interpret param details)
                 var useDetailedArgHints = params.length === 0 || !isNaN(parseInt(activeArg));
                 var typeStr = '';
                 typeStr += htmlEncode(data.exprName || data.name || "fn");
@@ -1205,14 +2425,11 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
                 var activeParam = null,
                     activeParamChildren = []; //one ore more child params for multiple object properties
 
-
                 for (var i = 0; i < fnArgs.args.length; i++) {
                     var paramStr = '';
                     var isCurrent = !isNaN(parseInt(activeArg)) ? i === activeArg : false;
                     var arg = fnArgs.args[i]; //name,type
                     var name = arg.name || "?";
-
-                    //as of tern .9.1 update it will append a questionmark to the end of param if its optional (but it doesnt parse optional params properly in many cases)
                     if (name.length > 1 && name.substr(name.length - 1) === '?') {
                         name = name.substr(0, name.length - 1);
                         arg.name = name; //update the arg var with proper name for use below
@@ -1262,7 +2479,6 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
                     typeStr += paramStr;
                 }
 
-
                 typeStr += ")";
                 if (fnArgs.rettype) {
                     if (useDetailedArgHints) {
@@ -1273,13 +2489,10 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
                     }
                 }
                 typeStr = '<span class="' + cls + (useDetailedArgHints ? "typeHeader" : "typeHeader-simple") + '">' + typeStr + '</span>'; //outer wrapper
-
-                //if this is for arg hints, then show parameter details only for active param
                 if (useDetailedArgHints) {
                     if (activeParam && activeParam.description) {
                         typeStr += '<div class="' + cls + 'farg-current-description"><span class="' + cls + 'farg-current-name">' + activeParam.name + ': </span>' + activeParam.description + '</div>';
                     }
-                    //add active param children details
                     if (activeParamChildren && activeParamChildren.length > 0) {
                         for (var i = 0; i < activeParamChildren.length; i++) {
                             var t = activeParamChildren[i].type ? '<span class="' + cls + 'type">{' + activeParamChildren[i].type + '} </span>' : '';
@@ -1292,36 +2505,21 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
         }
         if (isNaN(parseInt(activeArg))) {
             if (data.doc) {
-
-                //#region Parse Comments
-
-                /**
-                 * Replaces param tags and their type, name, description with formatted html;
-                 * This is not fullproof (made very quickly)
-                 * @param {string} str - comments to parse
-                 * @param {object[]} params - result of parseJsDocParams()
-                 */
-                var replaceParams = function(str, params) {
+                var replaceParams = function (str, params) {
                     if (params.length === 0) {
                         return str;
                     }
-
-                    //#region strip params from input
                     str = str.replace(/@param/gi, '@param'); //make sure all param tags are lowercase
                     var beforeParams = str.substr(0, str.indexOf('@param'));
                     while (str.indexOf('@param') !== -1) {
                         str = str.substring(str.indexOf('@param') + 6); //starting after first param match
                     }
-                    //all params have been parsed out but we likely have a fragment of the last params type, name, and description remaining
                     if (str.indexOf('@') !== -1) {
                         str = str.substr(str.indexOf('@')); //start at next tag that is not a param
                     }
                     else {
                         str = ''; //@param was likely the last tag, trim remaining as its likely the end of a param description
                     }
-                    //#endregion
-
-                    //#region append formatted params to description that is stripped of params
                     var paramStr = '';
                     for (var i = 0; i < params.length; i++) {
                         paramStr += '<div>';
@@ -1353,41 +2551,31 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
                     if (paramStr !== '') {
                         str = '<span class="' + cls + 'jsdoc-param-wrapper">' + paramStr + '</span>' + str;
                     }
-                    //#endregion
 
                     return beforeParams + str;
                 };
-                /**
-                 * @returns {string} with jsdoc tags (starts with @ symbol) highlighted via html
-                 */
-                var highlighTags = function(str) {
+                var highlighTags = function (str) {
                     try {
                         str = ' ' + str + ' '; //add white space for regex
                         var re = / ?@\w{1,50}\s ?/gi;
                         var m;
-                        //NOTE: regex matches with white space on each side, in replacment below we get rid of white space using trim, this is critical or we will create an infinte loop
                         while ((m = re.exec(str)) !== null) {
                             if (m.index === re.lastIndex) {
                                 re.lastIndex++;
                             }
                             str = str.replace(m[0], ' <span class="' + cls + 'jsdoc-tag">' + m[0].trim() + '</span> ');
                         }
-                        //str = str.trim();
                     }
                     catch (ex) {
                         showError(ts, editor, ex);
                     }
                     return str.trim();
                 };
-                /**
-                 * @returns {string} with jsdoc types (inside of curly brackets) highlighted via html
-                 */
-                var highlightTypes = function(str) {
+                var highlightTypes = function (str) {
                     str = ' ' + str + ' '; //add white space for regex
                     try {
                         var re = /\s{[^}]{1,50}}\s/g;
                         var m;
-                        //NOTE: regex matches with white space on each side, in replacment below we get rid of white space using trim, this is critical or we will create an infinte loop
                         while ((m = re.exec(str)) !== null) {
                             if (m.index === re.lastIndex) {
                                 re.lastIndex++;
@@ -1400,13 +2588,8 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
                     }
                     return str.trim();
                 };
-                /**
-                 * @returns {string} with urls turned into html links;
-                 * @param {str} string that has already been html encoded
-                 */
-                var createLinks = function(str) {
+                var createLinks = function (str) {
                     try {
-                        //place holders for replacing each match to ensure they no longer match, which will then get replaced again at end of function
                         var httpProto = 'HTTP_PROTO_PLACEHOLDER';
                         var httpsProto = 'HTTPS_PROTO_PLACEHOLDER';
                         var re = /\bhttps?:\/\/[^\s<>"`{}|\^\[\]\\]+/gi;
@@ -1419,7 +2602,6 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
                             var text = m[0].replace(new RegExp('https://', 'i'), '').replace(new RegExp('http://', 'i'), '');
                             str = str.replace(m[0], '<a class="' + cls + 'tooltip-link" href="' + withoutProtocol + '" target="_blank">' + text + ' </a>');
                         }
-                        //now replace protocol place holders with protocol
                         str = str.replace(new RegExp(httpsProto, 'gi'), 'https').replace(new RegExp(httpProto, 'gi'), 'http');
                     }
                     catch (ex) {
@@ -1428,20 +2610,15 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
                     return str;
                 };
 
-
                 if (d.substr(0, 1) === '*') {
                     d = d.substr(1); //tern leaves this for jsDoc as they start with /**, not exactly sure why...
                 }
-                /*if (includeType) {
-                    d = " - " + d + " "; //separate from type that starts it, and add end space for regexps to work if last char is a tag
-                }*/
                 d = htmlEncode(d.trim());
                 d = replaceParams(d, params);
                 d = highlighTags(d);
                 d = highlightTypes(d);
                 d = createLinks(d);
                 tip.appendChild(elFromString(d));
-                //#endregion
             }
             if (data.url) {
                 tip.appendChild(document.createTextNode(" "));
@@ -1456,10 +2633,6 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
         }
         return tip;
     }
-    /**
-     * Parses jsDoc parameters from function comments
-     * @returns {array(name,type,description,optional,defaultValue)}
-     */
     function parseJsDocParams(str) {
         if (!str) return [];
         str = str.replace(/@param/gi, '@param'); //make sure all param tags are lowercase
@@ -1471,15 +2644,12 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
             var paramStr = nextTagStart === -1 ? str : str.substr(0, nextTagStart);
             var thisParam = {
                 name: "",
-                //if there is more than one param tag descibing an object with multiple properties, this will be name of parent object; http://stackoverflow.com/questions/6460604/how-to-describe-object-arguments-in-jsdoc/6460748#6460748
                 parentName: "",
                 type: "",
                 description: "",
                 optional: false,
                 defaultValue: ""
             };
-
-            //#region extract type type if any
             var re = /\s{[^}]{1,50}}\s/;
             var m;
             while ((m = re.exec(paramStr)) !== null) {
@@ -1490,9 +2660,6 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
                 paramStr = paramStr.replace(thisParam.type, '').trim(); //remove type from param string
                 thisParam.type = thisParam.type.replace('{', '').replace('}', '').replace(' ', '').trim(); //remove brackets and spaces
             }
-            //#endregion
-
-            //#region parseName
             paramStr = paramStr.trim(); //we now have a single param string starting after the type, next string should be the parameter name
             if (paramStr.substr(0, 1) === '[') {
                 thisParam.optional = true;
@@ -1504,7 +2671,6 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
                 var nameStr = paramStr.substring(0, endBracketIdx + 1);
                 paramStr = paramStr.replace(nameStr, '').trim(); //remove name portion from param str
                 nameStr = nameStr.replace('[', '').replace(']', ''); //remove brackets
-                //check for default value that is specified using =
                 if (nameStr.indexOf('=') !== -1) {
                     var defaultValue = nameStr.substr(nameStr.indexOf('=') + 1);
                     if (defaultValue.trim() === '') {
@@ -1532,20 +2698,13 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
             }
             var nameDotIdx = thisParam.name.indexOf('.');
             if (nameDotIdx !== -1) {
-                //NOTE: currently only supporting a single dot for parent name
                 thisParam.parentName = thisParam.name.substring(0, nameDotIdx);
                 thisParam.name = thisParam.name.substring(nameDotIdx + 1);
             }
-            //#endregion
-
-            //#region parseDescription
             paramStr = paramStr.trim();
             if (paramStr.length > 0) {
                 thisParam.description = paramStr.replace('-', '').trim(); //optional hiphen specified before start of description
             }
-            //#endregion
-
-            //escape html
             thisParam.name = htmlEncode(thisParam.name);
             thisParam.parentName = htmlEncode(thisParam.parentName);
             thisParam.description = htmlEncode(thisParam.description);
@@ -1555,10 +2714,6 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
         }
         return params;
     }
-    /**
-     * Finds all references to the current token
-     * @param {function} [cb] - pass a callback to return find refs data result instead of showing tooltip, used internally by rename
-     */
     function findRefs(ts, editor, cb) {
         if (!inJavascriptMode(editor)) {
             return;
@@ -1566,18 +2721,13 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
         ts.request(editor, {
             type: "refs",
             fullDocs: true
-        }, function(error, data) {
+        }, function (error, data) {
             if (error) return showError(ts, editor, error);
-
-            //if callback, then send data and quit here
             if (typeof cb === "function") {
                 cb(data);
                 return;
             }
-
-            //data comes back with name,type,refs{start(ch,line),end(ch,line),file},
             closeAllTips();
-
 
             var header = document.createElement("div");
             var title = document.createElement("span");
@@ -1585,38 +2735,31 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
             title.setAttribute("style", "font-weight:bold;");
             header.appendChild(title);
 
-            var tip = makeTooltip(null, null, header, editor, false, - 1);
+            var tip = makeTooltip(null, null, header, editor, false, -1);
             if (!data.refs || data.refs.length === 0) {
                 tip.appendChild(elt('div', '', 'No References Found'));
                 return;
             }
-
-            //total refs
             var totalRefs = document.createElement("div");
             totalRefs.setAttribute("style", "font-style:italic; margin-bottom:3px;");
             totalRefs.innerHTML = data.refs.length + " References Found";
             header.appendChild(totalRefs);
-
-            //create select input for showing refs
             var refInput = document.createElement("select");
             refInput.setAttribute("multiple", "multiple");
-            refInput.addEventListener("change", function() {
+            refInput.addEventListener("change", function () {
                 var doc = findDoc(ts, editor); //get current doc in editor
                 var el = this,
                     selected;
                 for (var i = 0; i < el.options.length; i++) {
-                    //only allow 1 selected item
                     if (selected) {
                         el[i].selected = false;
                         continue;
                     }
-                    //once an item has been selected, grey it out
                     if (el[i].selected) {
                         selected = el[i];
                         selected.style.color = "grey";
                     }
                 }
-                //read data attributes from selected item
                 var file = selected.getAttribute("data-file");
                 var start = {
                     "line": selected.getAttribute("data-line"),
@@ -1632,14 +2775,11 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
                 }
                 var animatedScroll = editor.getAnimatedScroll();
                 if (animatedScroll) {
-                    //disable this as there is no way to know for sure when the thing is done scrolling
                     editor.setAnimatedScroll(false);
                 }
-                //console.log('file='+file,'\ndoc',doc,'\ntargetDoc',targetDoc);// THIS IS NOT WORKING!
 
                 moveTo(ts, doc, targetDoc, start, null, true);
-                //move the tooltip to new cusor pos after timeout (hopefully the cursor move is complete after timeout.. ghetto)
-                setTimeout(function() {
+                setTimeout(function () {
                     moveTooltip(tip, null, null, editor);
                     closeAllTips(tip); //close any tips that moving this might open, except for the ref tip
                     if (animatedScroll) {
@@ -1647,9 +2787,7 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
                     }
                 }, updatePosDelay);
             });
-
-            //append line to tooltip for each refeerence
-            var addRefLine = function(file, start) {
+            var addRefLine = function (file, start) {
                 var el = document.createElement("option");
                 el.setAttribute("data-file", file);
                 el.setAttribute("data-line", start.line);
@@ -1657,14 +2795,11 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
                 el.text = (start.line + 1) + ":" + start.ch + " - " + file; //add 1 to line because editor does not use line 0
                 refInput.appendChild(el);
             };
-
-            //finalize the input after all options are added
-            var finalizeRefInput = function() {
+            var finalizeRefInput = function () {
                 var height = (refInput.options.length * 15);
                 height = height > 175 ? 175 : height;
                 refInput.style.height = height + "px";
                 tip.appendChild(refInput);
-                //refInput.focus();//log(refInput); //try to focus on the thing but it doesnt work.. not a big deal but a bit annoying
             };
 
             for (var i = 0; i < data.refs.length; i++) {
@@ -1681,33 +2816,21 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
             }
         });
     }
-    /**
-     * Renames variable at current location
-     */
     function rename(ts, editor) {
-        /*var token = editor.getTokenAt(editor.getCursor());
-            if (!/\w/.test(token.string)) showError(ts, editor, "Not at a variable");*/
 
-        findRefs(ts, editor, function(r) {
+        findRefs(ts, editor, function (r) {
             if (!r || r.refs.length === 0) {
                 showError(ts, editor, "Cannot rename as no references were found for this variable");
                 return;
             }
-            /*if(r.type =="global"){
-                showError(ts, editor, "Cannot rename global variable yet (variables in different source files cannot be renamed YET, its on TODO list");
-                return;
-            }*/
-
-            //execute rename
-            var executeRename = function(newName) {
+            var executeRename = function (newName) {
                 ts.request(editor, {
                     type: "rename",
                     newName: newName,
                     fullDocs: true
-                }, function(error, data) {
+                }, function (error, data) {
                     if (error) return showError(ts, editor, error);
-                    applyChanges(ts, data.changes, function(result) {
-                        //show result tip
+                    applyChanges(ts, data.changes, function (result) {
                         var resultTip = makeTooltip(null, null, elt("div", "", "Replaced " + result.replaced + " references sucessfully"), editor, true);
                         var errors = elt("div", "");
                         errors.setAttribute("style", "color:red");
@@ -1723,13 +2846,11 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
                     });
                 });
             };
-
-            //create tooltip to get new name from user
             var tip = makeTooltip(null, null, elt("div", "", r.name + ": " + r.refs.length + " references found \n (WARNING: this wont work for refs in another file!) \n\n Enter new name:\n"), editor, true);
             var newNameInput = elt('input');
             tip.appendChild(newNameInput);
             try {
-                setTimeout(function() {
+                setTimeout(function () {
                     newNameInput.focus();
                 }, 100);
             }
@@ -1738,10 +2859,9 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
             var goBtn = elt('button', '');
             goBtn.textContent = "Rename";
             goBtn.setAttribute("type", "button");
-            goBtn.addEventListener('click', function() {
+            goBtn.addEventListener('click', function () {
                 remove(tip);
                 var newName = newNameInput.value;
-                //TODO: add validation of new name (run method that removes invalid varaible names then compare to user input, if dont match then show error)
                 if (!newName || newName.trim().length === 0) {
                     showError(ts, editor, "new name cannot be empty");
                     return;
@@ -1752,23 +2872,14 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
             tip.appendChild(goBtn);
         });
     }
-    //holds original posistion of next change; used inside applyChanges fn
     var nextChangeOrig = 0;
-    /**
-     * Applys changes for a variable rename.
-     * From CodeMirror, not sure exactly how logic works
-     * TODO: this only works for current file at the moment!
-     */
     function applyChanges(ts, changes, cb) {
-        // console.log('changes', changes);
         var Range = ace.require("ace/range").Range; //for ace
         var perFile = Object.create(null);
         for (var i = 0; i < changes.length; ++i) {
             var ch = changes[i];
             (perFile[ch.file] || (perFile[ch.file] = [])).push(ch);
         }
-
-        //result for callback
         var result = {
             replaced: 0,
             status: "",
@@ -1779,21 +2890,15 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
             var known = ts.docs[file],
                 chs = perFile[file];
             if (!known) continue;
-            chs.sort(function(a, b) {
+            chs.sort(function (a, b) {
                 return cmpPos(b.start, a.start);
             });
             var origin = "*rename" + (++nextChangeOrig);
             for (var i = 0; i < chs.length; ++i) {
                 try {
                     var ch = chs[i];
-                    //known.doc.replaceRange(ch.text, ch.start, ch.end, origin);
-                    //console.log('ch.text: ' , ch.text , ' ;ch.start: ' , ch.start,' ;ch.end: ' , ch.end ,' ;origin: ' , origin );
-                    //NOTE: the origin is used for CodeMirror: When origin is given, it will be passed on to "change" events, and its first letter will be used to determine whether this change can be merged with previous history events, in the way described for selection origins. -- example of origin: *rename1  (TODO: see if ace has some change origin for better history undo)
-
-                    //ch.start and ch.end are {line,ch}
                     ch.start = toAceLoc(ch.start);
                     ch.end = toAceLoc(ch.end);
-                    //ace range: function (startRow, startColumn, endRow, endColumn) {
                     known.doc.session.replace(new Range(ch.start.row, ch.start.column, ch.end.row, ch.end.column), ch.text);
                     result.replaced++;
                 }
@@ -1807,10 +2912,6 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
             cb(result);
         }
     }
-    /**
-     * Gets if the cursors current location is on a javascirpt call to a function (for auto showing type on cursor activity as we dont want to show type automatically for everything because its annoying)
-     * @returns bool
-     */
     function isOnFunctionCall(editor) {
         if (!inJavascriptMode(editor)) return false;
         if (somethingIsSelected(editor)) return false;
@@ -1821,38 +2922,24 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
         if (!tok.start) return; //sometimes this is missing... not sure why but makes it impossible to do what we want
         if (tok.type.indexOf('entity.name.function') !== -1) return false; //function definition
         if (tok.type.indexOf('storage.type') !== -1) return false; // could be 'function', which is start of an anon fn
-
-        //check if next token after this one is open parenthesis
         var nextTok = editor.session.getTokenAt(editor.getSelectionRange().end.row, (tok.start + tok.value.length + 1));
         if (!nextTok || nextTok.value !== "(") return false;
 
         return true;
     }
-    /**
-     * Returns true if something is selected in the editor (meaning more than 1 character)
-     */
     function somethingIsSelected(editor) {
         return editor.getSession().getTextRange(editor.getSelectionRange()) !== '';
     }
-    /**
-     * gets cursor posistion for opening tooltip below the cusor.
-     * @returns {object} - {top:number, left:number)
-     */
     function getCusorPosForTooltip(editor) {
-        //there is likely a better way to do this...
         var place = editor.renderer.$cursorLayer.getPixelPosition(); //this gets left correclty, but not top if there is scrolling
         place.top = editor.renderer.$cursorLayer.cursors[0].offsetTop; //this gets top correctly regardless of scrolling, but left is not correct
         place.top += editor.renderer.scroller.getBoundingClientRect().top; //top offset of editor on page
         place.left += editor.renderer.container.offsetLeft;
-        //45 and 17 are arbitrary numbers that seem to put the tooltip in the right place
         return {
             left: place.left + 45,
             top: place.top + 17
         };
     }
-    /**
-     * Gets token at current cursor posistion. Returns null if none
-     */
     function getCurrentToken(editor) {
         try {
             var pos = editor.getSelectionRange().end;
@@ -1862,46 +2949,23 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
             showError(ts, editor, ex);
         }
     }
-
-
-    //#region ArgHints
-
-
-    /**
-     * gets a call posistion {start: {line,ch}, argpos: number} if editor's cursor location is currently in a function call, otherwise returns undefined
-     * @param {row,column} [pos] optionally pass this to check for call at a posistion other than current cursor posistion
-     * @returns {undefined | (argpos,start(ch,line))} call pos object or undefined if not in call pos
-     *
-     * @note: takes about .01ms to complete on machine with Intel core i3 @ 2.6ghz in Chrome for windows 8
-     */
     function getCallPos(editor, pos) {
         if (somethingIsSelected(editor)) return;
         if (!inJavascriptMode(editor)) return;
-
-        //#region setup
         var start = {}; //start of query to tern (start of the call location)
         var currentPosistion = pos || editor.getSelectionRange().start; //{row,column}
         currentPosistion = toAceLoc(currentPosistion); //just in case
         var currentLine = currentPosistion.row;
         var currentCol = currentPosistion.column;
         var firstLineToCheck = Math.max(0, currentLine - 6);
-        //current character
         var ch = '';
-        //current depth of the call based on parenthesis
         var depth = 0;
-        //array of posistions where commas lie that could potentialy increment arg pos
         var commas = [];
-        //#endregion
-
-
-        //#region iterate backwards through each row
         for (var row = currentLine; row >= firstLineToCheck; row--) {
             var thisRow = editor.session.getLine(row);
             if (row === currentLine) {
                 thisRow = thisRow.substr(0, currentCol);
             }
-
-            //#region for current line, only get up to cursor posistion
             for (var col = thisRow.length; col >= 0; col--) {
                 ch = thisRow.substr(col, 1);
                 if (ch === '}' || ch === ')' || ch === ']') {
@@ -1912,12 +2976,7 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
                         depth -= 1;
                     }
                     else if (ch === '(') {
-                        //#region ensure before start of paren is function call
-
-                        //set to true to log info about potential function calls
                         var debugFnCall = false;
-
-                        //check before call start to make sure its not a function definition
                         var upToParen = thisRow.substr(0, col);
                         if (!upToParen.length) {
                             if (debugFnCall) console.log('not fn call because before parent is empty');
@@ -1925,27 +2984,13 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
                         }
                         if (upToParen.substr(upToParen.length - 1) === ' ') {
                             if (debugFnCall) console.log('not fn call because there is a space before paren');
-                            //NOTE: technically there can be a space before paren in function call, but it would be horrific code
-                            //NOTE: this check also ensure we dont think the following are function calls:
-                            //      if ()
-                            //      for ()
-                            // without this check, the keyword check that rules out 'if' and 'for' before paren
-                            // wouldn't work because the token before the opening paren is a space, which is token type `text`
                             break;
                         }
-
-                        //ensure that this is not a function delcaration
-                        //this ensures we dont get arg hints for:
-                        //      function testfn([cursorHere]){}
                         var wordBeforeFnName = upToParen.split(' ').reverse()[1];
                         if (wordBeforeFnName && wordBeforeFnName.toLowerCase() === 'function') {
                             if (debugFnCall) console.log('not fn call because this is a function declaration');
                             break;
                         }
-
-                        //Make sure this is not in a comment or start of a if, for, while, etc... statemen
-                        //also, dont get arg hints for anon function delcaration (token.type storage.type),
-                        //  example:  function([cursorHere]){}   (dont get arg hints for this)
                         var token = editor.session.getTokenAt(row, col);
                         if (token) {
                             if (token.type.toString().indexOf('comment') !== -1 || token.type === 'keyword' || token.type === 'storage.type') {
@@ -1972,14 +3017,10 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
                     });
                 }
             }
-            //#endregion
 
         }
-        //#endregion
 
         if (!start.hasOwnProperty('line')) return; //start not found
-
-        //get argument posistion inside of call by adding one for each comma that occurs after start pos
         var argpos = 0;
         for (var i = 0; i < commas.length; i++) {
             var p = commas[i];
@@ -1993,10 +3034,6 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
             "argpos": argpos
         };
     }
-    /**
-     * Gets if editor is currently in call posistion
-     *  @param {row,column} [pos] optionally pass this to check for call at a posistion other than current cursor posistion
-     */
     function isInCall(editor, pos) {
         var callPos = getCallPos(editor, pos);
         if (callPos) {
@@ -2006,10 +3043,6 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
     }
 
     var debounce_updateArgHints = null;
-    /**
-     * If editor is currently inside of a function call, this will try to get definition of the function that is being called, if successfull will show tooltip about arguments for the function being called.
-     * NOTE: did performance testing and found that scanning for callstart takes less than 1ms
-     */
     function updateArgHints(ts, editor) {
         clearTimeout(debounce_updateArgHints);
         closeArgHints(ts);
@@ -2019,25 +3052,18 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
         }
         var start = callPos.start;
         var argpos = callPos.argpos;
-
-        //check for arg hints for the same call start, if found, then use them but update the argPos (occurs when moving between args in same call)
         var cache = ts.cachedArgHints;
         if (cache && cache.doc == editor && cmpPos(start, cache.start) === 0) {
             return showArgHints(ts, editor, argpos);
         }
-
-        //large debounce when having to get new arg hints as its expensive and moving cursor around rapidly can hit this alot
         debounce_updateArgHints = setTimeout(inner, 500);
-
-        //still going: get arg hints from server
         function inner() {
             ts.request(editor, {
                 type: "type",
                 preferFunction: true,
                 end: start
-            }, function(error, data) {
+            }, function (error, data) {
                 if (error) {
-                    //TODO: get this error a lot, likely because its trying to show arg hints where there is not a call, need update the method for finding call above to be more accurate
                     if (error.toString().toLowerCase().indexOf('no expression at') === -1 && error.toString().toLowerCase().indexOf('no type found at') === -1) {
                         return showError(ts, editor, error);
                     }
@@ -2057,18 +3083,11 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
             });
         }
     }
-    /**
-     * Displays argument hints as tooltip
-     * @param {int} pos - index of the current parameter that the cursor is located at (inside of parameters)
-     */
     function showArgHints(ts, editor, pos) {
-        //TODO: add a button in this tooltip that wil get full type info instead of the simplied info
         closeArgHints(ts);
         var cache = ts.cachedArgHints,
             tp = cache.type,
             comments = cache.comments; //added by morgan to include document comments
-
-        //parse comments to use for type!
         if (!cache.hasOwnProperty('params')) {
             if (!cache.comments) {
                 cache.params = null;
@@ -2096,10 +3115,6 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
         ts.activeArgHints = makeTooltip(place.left, place.top, tip, editor, true);
         return;
     }
-    /**
-     * Parses result of terns type string into an array of arguments and a return type
-     * @returns {null | (args:array(name,type), rettype)} null if failed to parse
-     */
     function parseFnType(text) {
         if (text.substring(0, 2) !== 'fn') return null; //not a function
         if (text.indexOf('(') === -1) return null;
@@ -2113,74 +3128,50 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
             for (;;) {
                 var next = text.charAt(pos);
                 if (upto.test(next) && !depth) return text.slice(start, pos);
-                if (/[{\[\(]/.test(next))++depth;
-                else if (/[}\]\)]/.test(next))--depth;
+                if (/[{\[\(]/.test(next)) ++depth;
+                else if (/[}\]\)]/.test(next)) --depth;
                 ++pos;
             }
         }
-
-        // Parse arguments
-        if (text.charAt(pos) != ")") for (;;) {
-            var name = text.slice(pos).match(/^([^, \(\[\{]+): /);
-            if (name) {
-                pos += name[0].length;
-                name = name[1];
+        if (text.charAt(pos) != ")")
+            for (;;) {
+                var name = text.slice(pos).match(/^([^, \(\[\{]+): /);
+                if (name) {
+                    pos += name[0].length;
+                    name = name[1];
+                }
+                args.push({
+                    name: name,
+                    type: skipMatching(/[\),]/)
+                });
+                if (text.charAt(pos) == ")") break;
+                pos += 2;
             }
-            args.push({
-                name: name,
-                type: skipMatching(/[\),]/)
-            });
-            if (text.charAt(pos) == ")") break;
-            pos += 2;
-        }
 
         var rettype = text.slice(pos).match(/^\) -> (.*)$/);
-        //logO(args, 'args'); logO(rettype, 'rettype');//nothing
         return {
             args: args,
             rettype: rettype && rettype[1]
         };
     }
-
-    //#endregion
-
-
-    //#region tooltips
-
-    /**
-     * @returns {string} html escaped string
-     */
     function htmlEncode(string) {
         var entityMap = {
             "<": "&lt;",
             ">": "&gt;",
         };
-        return String(string).replace(/[<>]/g, function(s) {
+        return String(string).replace(/[<>]/g, function (s) {
             if (!s) return '';
             return entityMap[s];
         });
     }
-    /**
-     * returns the difference of posistion a - posistion b (returns difference in line if any, then difference in ch if any)
-     * Will return 0 if posistions are the same; (note: automatically converts to ternPosistion)
-     * @param {line,ch | row,column} a - first posistion
-     * @param {line,ch | row,column} b - second posistion
-     */
     function cmpPos(a, b) {
-        //if lines matches (result is 0), then returns difference in character
         a = toTernLoc(a);
         b = toTernLoc(b);
         return a.line - b.line || a.ch - b.ch;
     }
-    /**
-     * not done
-     */
     function dialog(cm, text, f) {
         alert('need to implment dialog');
     }
-    /**
-     * (10.10.2014) Creates document fragment (element) from html string
-     */
     function elFromString(s) {
         var frag = document.createDocumentFragment(),
             temp = document.createElement('span');
@@ -2190,9 +3181,6 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
         }
         return frag;
     }
-    /**
-     * Creates element
-     */
     function elt(tagname, cls /*, ... elts*/ ) {
         var e = document.createElement(tagname);
         if (cls) e.className = cls;
@@ -2203,10 +3191,6 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
         }
         return e;
     }
-    /**
-     * Closes any open tern tooltips
-     * @param {element} [except] - pass an element that should NOT be closed to close all except this
-     */
     function closeAllTips(except) {
         var tips = document.querySelectorAll('.' + cls + 'tooltip');
         if (tips.length > 0) {
@@ -2218,11 +3202,6 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
             }
         }
     }
-    /**
-     * Creates tooltip at current cusor location;
-     * tooltip will auto close on cursor activity;
-     * @param {int} [timeout=3000] - pass fadeout time, or -1 to not fade out
-     */
     function tempTooltip(editor, content, timeout) {
         if (!timeout) {
             timeout = 3000;
@@ -2230,15 +3209,6 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
         var location = getCusorPosForTooltip(editor);
         return makeTooltip(location.left, location.top, content, editor, true, timeout);
     }
-    /**
-     * Makes a tooltip to show extra info in the editor
-     * @param {number} x - x coordinate (relative to document) (pass null to use current location)
-     * @param {number} y - y coordinate (relative to document) (pass null to use current location)
-     * @param {element} content
-     * @param {ace.editor} [editor] - must pass editor if closeOnCusorActivity=true to bind event
-     * @param {bool} [closeOnCusorActivity=false] - pass true to bind next cursor activty to destroy this tooltip, this will also bind closing on editor scroll
-     * @param {int} [faceOutDuration] - pass a number to make the tooltip fade out (make it temporary)
-     */
     function makeTooltip(x, y, content, editor, closeOnCusorActivity, fadeOutDuration) {
         if (x === null || y === null) {
             var location = getCusorPosForTooltip(editor);
@@ -2249,12 +3219,10 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
         node.style.left = x + "px";
         node.style.top = y + "px";
         document.body.appendChild(node);
-
-        //add close button
         var closeBtn = document.createElement('a');
         closeBtn.setAttribute('title', 'close');
         closeBtn.setAttribute('class', cls + 'tooltip-boxclose');
-        closeBtn.addEventListener('click', function() {
+        closeBtn.addEventListener('click', function () {
             remove(node);
         });
         node.appendChild(closeBtn);
@@ -2263,8 +3231,7 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
             if (!editor) {
                 throw Error('tern.makeTooltip called with closeOnCursorActivity=true but editor was not passed. Need to pass editor!');
             }
-            //close tooltip and unbind
-            var closeThisTip = function() {
+            var closeThisTip = function () {
                 if (!node.parentNode) return; //not sure what this is for, its from CM
                 remove(node);
                 editor.getSession().selection.off('changeCursor', closeThisTip);
@@ -2279,8 +3246,7 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
         if (fadeOutDuration) {
             fadeOutDuration = parseInt(fadeOutDuration, 10);
             if (fadeOutDuration > 100) {
-                //fade out tip
-                var fadeThistip = function() {
+                var fadeThistip = function () {
                     if (!node.parentNode) return; //not sure what this is for, its from CM
                     fadeOut(node, fadeOutDuration);
                     try {
@@ -2295,12 +3261,6 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
         }
         return node;
     }
-    /**
-     * Moves an already open tooltip
-     * @param {element} tip
-     * @param {number} [x] - coordinate, leave blank to use current cusor pos
-     * @param {number} [y] - coordinate, leave blank to use current cusor pos
-     */
     function moveTooltip(tip, x, y, editor) {
         if (x === null || y === null) {
             var location = getCusorPosForTooltip(editor);
@@ -2310,16 +3270,10 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
         tip.style.left = x + "px";
         tip.style.top = y + "px";
     }
-    /**
-     * removes node(element) from DOM
-     */
     function remove(node) {
         var p = node && node.parentNode;
         if (p) p.removeChild(node);
     }
-    /**
-     * Fades tooltip out
-     */
     function fadeOut(tooltip, timeout) {
         if (!timeout) {
             timeout = 1100;
@@ -2329,14 +3283,10 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
             return;
         }
         tooltip.style.opacity = "0";
-        setTimeout(function() {
+        setTimeout(function () {
             remove(tooltip);
         }, timeout);
     }
-    /**
-     * Shows error
-     * @param {bool} [noPopup=false] - pass true to log error without showing popUp tooltip with error
-     */
     function showError(ts, editor, msg, noPopup) {
         try {
             console.log('ternError', msg);
@@ -2347,7 +3297,7 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
             }
         }
         catch (ex) {
-            setTimeout(function() {
+            setTimeout(function () {
                 if (typeof msg === undefined) {
                     msg = " (no error passed)";
                 }
@@ -2355,22 +3305,12 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
             }, 0);
         }
     }
-    /**
-     * Closes any active arg hints
-     */
     function closeArgHints(ts) {
         if (ts.activeArgHints) {
             remove(ts.activeArgHints);
             ts.activeArgHints = null;
         }
     }
-    //#endregion
-
-
-    //#region JumpTo
-    /**
-     * jumps to definition of a function or variable where the cursor is currently located
-     */
     function jumpToDef(ts, editor) {
         function inner(varName) {
             var req = {
@@ -2378,13 +3318,7 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
                 variable: varName || null
             };
             var doc = findDoc(ts, editor);
-            //this calls  function findDef(srv, query, file) {
-            ts.server.request(buildRequest(ts, doc, req, null, true), function(error, data) {
-                //DBG(arguments, true);//REMOVE
-                /**
-                 *  both the data.origin and data.file seem to contain the full path to the location of what we need to jump to
-                 * data contains: context, contextOffset, start (ch,line), end (ch,line), file, origin
-                 */
+            ts.server.request(buildRequest(ts, doc, req, null, true), function (error, data) {
 
                 if (error) return showError(ts, editor, error);
                 if (!data.file && data.url) {
@@ -2402,11 +3336,9 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
                             end: toTernLoc(editor.getSelectionRange().end) //editor.getCursor("to")
                         });
                         moveTo(ts, doc, localDoc, found.start, found.end);
-                        // moveTo(ts, doc, localDoc, found.start, found.end);
                         return;
                     }
                     else { //not local doc- added by morgan... this still needs work as its a hack for the fact that ts.docs does not contain the file we want, instead it only contains a single file at a time. need to fix this (likely needs a big overhaul)
-                        //NOTE: my quick hack is going to make jumpting back to previous file not work. needs to be fixed
                         moveTo(ts, doc, {
                             name: data.file
                         }, data.start, data.end);
@@ -2417,29 +3349,15 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
                 showError(ts, editor, "Could not find a definition.");
             });
         }
-
-        /* TODO: need to convert this part or see if its even needed
-        if (!atInterestingExpression(editor)) dialog(editor, "Jump to variable", function(name) {
-            if (name) inner(name);
-        });
-        else inner();*/
         inner();
     }
-    /**
-     * Moves editor to a location (or a location in another document)
-     * @param start - cursor location (can be tern or ace location as it will auto convert)
-     * @param [end] - (if not passed, will use start) cursor location (can be tern or ace location as it will auto convert)
-     * @param {bool} [doNotCloseTip=false] - pass true to NOT close all tips
-     */
     function moveTo(ts, curDoc, doc, start, end, doNotCloseTips) {
-        //DBG(arguments,true);
         end = end || start;
         if (curDoc != doc) {
             if (ts.options.switchToDoc) {
                 if (!doNotCloseTips) {
                     closeAllTips();
                 }
-                //5.23.2014- added start  parameter to pass to child
                 ts.options.switchToDoc(doc.name, toAceLoc(start), toAceLoc(end));
             }
             else {
@@ -2447,7 +3365,6 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
             }
             return;
         }
-        //still going: current doc, so go to
         curDoc.doc.gotoLine(toAceLoc(start).row, toAceLoc(start).column || 0); //this will make sure that the line is expanded
         var sel = curDoc.doc.getSession().getSelection(); // sel.selectionLead.setPosistion();// sel.selectionAnchor.setPosistion();
         sel.setSelectionRange({
@@ -2455,20 +3372,12 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
             end: toAceLoc(end)
         });
     }
-    /**
-     * Jumps back to previous posistion after using JumpTo
-     */
     function jumpBack(ts, editor) {
         var pos = ts.jumpStack.pop(),
             doc = pos && ts.docs[pos.file];
         if (!doc) return;
         moveTo(ts, findDoc(ts, editor), doc, pos.start, pos.end);
     }
-    /**
-     * Dont know what this does yet...
-     * Marijnh's comment: The {line,ch} representation of positions makes this rather awkward.
-     * @param {object} data - contains documentation for function, start (ch,line), end(ch,line), file, context, contextOffset, origin
-     */
     function findContext(editor, data) {
         try {
             var before = data.context.slice(0, data.contextOffset).split("\n");
@@ -2486,19 +3395,12 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
             for (var cur = startLine + 1; cur < editor.session.getLength() && text.length < data.context.length; ++cur) {
                 text += "\n" + editor.session.getLine(cur);
             }
-            // if (text.slice(0, data.context.length) == data.context)
-            // NOTE: this part is commented out and always returns data
-            // because there is a bug that is causing it to miss by one char
-            // and I dont know when the part below would ever be needed (I guess we will find out when it doesnt work)
         }
         catch (ex) {
             console.log('ext-tern.js findContext Error; (error is caused by a doc (string) being passed to this function instead of editor due to ghetto hack from adding VS refs... need to fix eventually. should only occur when jumping to def in separate file)', ex); //,'\neditor:',editor,'\ndata:',data);
         }
         return data;
-
-        //TODO--- need to use editor.find.... NOT IN USE RIGHT NOW... need to fix!
         console.log(new Error('This part is not complete, need to implement using Ace\'s search functionality'));
-        // console.log('data.context', data.context);
         var cursor = editor.getSearchCursor(data.context, 0, false);
         var nearest, nearestDist = Infinity;
         while (cursor.findNext()) {
@@ -2521,9 +3423,6 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
             end: end
         };
     }
-    /**
-     * (not exactly sure) Converted=true
-     */
     function atInterestingExpression(editor) {
         var pos = editor.getSelectionRange().end; //editor.getCursor("end"),
         var tok = editor.session.getTokenAt(pos.row, pos.column); // editor.getTokenAt(pos);
@@ -2532,14 +3431,7 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
             return false;
         }
         return /\w/.test(editor.session.getLine(pos.line).slice(Math.max(pos.ch - 1, 0), pos.ch + 1));
-        //return /\w/.test(editor.getLine(pos.line).slice(Math.max(pos.ch - 1, 0), pos.ch + 1));
     }
-    //#endregion
-
-
-    /**
-     * Called by Hidedoc... Sends document to server
-     */
     function sendDoc(ts, doc) {
         ts.server.request({
             files: [{
@@ -2547,21 +3439,14 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
                 name: doc.name,
                 text: docValue(ts, doc)
             }]
-        }, function(error) {
+        }, function (error) {
             if (error) console.error(error);
             else doc.changed = null;
         });
     }
-    /**
-     * returns true if current mode is javascript;
-     *  TO- make sure tern can work in mixed html mode
-     */
     function inJavascriptMode(editor) {
         return getCurrentMode(editor) == 'javascript';
     }
-    /**
-     * Gets editors mode at cursor posistion (including nested mode) (copied from snipped manager)     *
-     */
     function getCurrentMode(editor) {
         var scope = editor.session.$mode.$id || "";
         scope = scope.split("/").pop();
@@ -2580,22 +3465,10 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
         }
         return scope;
     }
-    /**
-     * Unknown.. doesnt appear to be used
-     */
     function startsWith(str, token) {
         return str.slice(0, token.length).toUpperCase() == token.toUpperCase();
     }
-    /**
-     * track changes of document
-     * @param {ternServer} ts
-     * @param {ternDoc} doc
-     * @param {aceChangeData} change - change even from ace
-     */
     function trackChange(ts, doc, change) {
-        //NOTE get value: editor.ternServer.docs['[doc]'].doc.session.getValue()
-
-        //convert ace Change event to object that is used in logic below
         var _change = {};
         _change.from = toTernLoc(change.data.range.start);
         _change.to = toTernLoc(change.data.range.end);
@@ -2611,7 +3484,6 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
 
         if (argHints && argHints.doc == doc && cmpPos(argHints.start, _change.to) <= 0) {
             ts.cachedArgHints = null;
-            //remove cached arghints if a change occured before the start of the function call of the current arg hitns
         }
 
         var changed = data.changed; //data is the tern server doc, which keeps a changed property, which is null here
@@ -2632,31 +3504,18 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
         if (changed.from > _change.from.line) {
             changed.from = changed.from.line;
         }
-        //if doc is > 250 lines & more than 100 lines changed, then update entire doc on tern server after 200ms.. not sure why the delay
         if (doc.session.getLength() > bigDoc && _change.to - changed.from > 100) {
-            setTimeout(function() {
+            setTimeout(function () {
                 if (data.changed && data.changed.to - data.changed.from > 100) {
                     sendDoc(ts, data);
                 }
             }, 200);
         }
     }
-    /**
-     * @hack - this should be a tern extension but I don't have time to do that right now
-     * Checks for explicit script references for current doc using Visual Studio syntax  {http://blogs.msdn.com/b/webdev/archive/2007/11/06/jscript-intellisense-a-reference-for-the-reference-tag.aspx}
-     * and adds the references to tern for intellisense
-     *
-     */
     function loadExplicitVsRefs(ts, editor) {
         if (!editor.ternServer || !editor.ternServer.enabledAtCurrentLocation(editor)) {
-            //console.log('tern not enabled at current location, not adding vs refs');
             return;
         }
-        //rather rudimentry browser test... should work but not tested enough. Needs to only be true if a real browser, not node, nodewebkit, or chrome app
-        //chrome app location starts with: chrome-extension
-        //nodewebkit location starts with: file://
-        //node shouldnt have window.location (i think?)
-        //note that this wont work if running from local file
         var isBrowser = window && window.location && window.location.toString().toLowerCase().indexOf('http') === 0;
 
         var StringtoCheck = "";
@@ -2670,7 +3529,6 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
             }
         }
         if (StringtoCheck === '') {
-            //console.log('no refs found for file, exiting');
             return;
         }
 
@@ -2688,17 +3546,14 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
                 }
             }
         }
-
-        //reads file and adds to tern
-        var ReadFile_AddToTern = function(path) {
+        var ReadFile_AddToTern = function (path) {
             try {
                 var isFullUrl = path.toLowerCase().indexOf("http") === 0;
                 if (isFullUrl || isBrowser) {
-                    //note: isBrowser and notFull url should be a relative url
                     var xhr = new XMLHttpRequest();
                     xhr.open("get", path, true);
                     xhr.send();
-                    xhr.onreadystatechange = function() {
+                    xhr.onreadystatechange = function () {
                         if (xhr.readyState == 4) {
                             console.log('adding web reference: ' + path);
                             editor.ternServer.addDoc(path.replace(/^.*[\\\/]/, ''), xhr.responseText);
@@ -2706,8 +3561,8 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
                     };
                 }
                 else { //local
-                    resolveFilePath(ts, path, function(resolvedPath) {
-                        getFile(ts, resolvedPath, function(err, data) {
+                    resolveFilePath(ts, path, function (resolvedPath) {
+                        getFile(ts, resolvedPath, function (err, data) {
                             if (err || !data) {
                                 console.log('error getting file: ' + resolvedPath, err);
                             }
@@ -2727,26 +3582,12 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
 
         for (var i = 0; i < refs.length; i++) {
             var thisPath = refs[i];
-            //thisPath = ResolvePath(thisPath, currentPath, pm.project.folders);
-            //console.log('resolved path: ' + thisPath +'\n original: '+ refs[i]+'\t\t current: '+currentPath);
             ReadFile_AddToTern(thisPath);
         }
     }
-
-    //#endregion
-
-
-    //#region WorkerWrapper
-    /**
-     * Worker Wrapper
-     * @param {function} [workerClass=Worker] - (hack) allows using a custom 'worker', used by Chrome extension to create a fake worker
-     */
     function WorkerServer(ts, workerClass) {
         var worker = workerClass ? new workerClass() : new Worker(ts.options.workerScript);
-        /**
-         * Starts worker server (or can be used to restart with new plugins/options)
-         */
-        var startServer = function(ts) {
+        var startServer = function (ts) {
             worker.postMessage({
                 type: "init",
                 defs: ts.options.defs,
@@ -2767,12 +3608,10 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
             }
             worker.postMessage(data);
         }
-        worker.onmessage = function(e) {
+        worker.onmessage = function (e) {
             var data = e.data;
             if (data.type == "getFile") {
-                getFile(ts, data.name, function(err, text) {
-                    // log('seding file, data=',data, 'text (first 100=',text.substr(0,100));
-                    //sends file back to worker, data contains the name, text contains file string
+                getFile(ts, data.name, function (err, text) {
                     send({
                         type: "getFile",
                         err: String(err),
@@ -2789,59 +3628,319 @@ ace.define('ace/tern', ['require', 'exports', 'module', 'ace/lib/dom'], function
                 delete pending[data.id];
             }
         };
-        worker.onerror = function(e) {
+        worker.onerror = function (e) {
             for (var id in pending) pending[id](e);
             pending = {};
         };
 
-        this.addFile = function(name, text) {
+        this.addFile = function (name, text) {
             send({
                 type: "add",
                 name: name,
                 text: text
             });
         };
-        this.delFile = function(name) {
+        this.delFile = function (name) {
             send({
                 type: "del",
                 name: name
             });
         };
-        this.request = function(body, c) {
+        this.request = function (body, c) {
             send({
                 type: "req",
                 body: body
             }, c);
         };
-        //sets defs (pass array of strings, valid defs are jquery, underscore, browser, ecma5)
-        //COMEBACK-- this doesnt work yet
-        this.setDefs = function(arr_defs) {
+        this.setDefs = function (arr_defs) {
             send({
                 type: "setDefs",
                 defs: arr_defs
             });
         };
-        //restarts worker's tern instance with updated options/plugins
-        this.restart = function(ts) {
+        this.restart = function (ts) {
             startServer(ts);
         };
-        //sends a debug message to worker (TEMPORARY)- worker then gets message and does something with it (have to update worker file with commands)
-        this.sendDebug = function(message) {
+        this.sendDebug = function (message) {
             send({
                 type: "debug",
                 body: message
             });
         };
     }
-    //#endregion
-
-
-    //#region CSS
     var dom = require("ace/lib/dom");
-    dom.importCssString(".Ace-Tern-tooltip { border: 1px solid silver; border-radius: 3px; color: #444; padding: 2px 5px; padding-right:15px; /*for close button*/ font-size: 90%; font-family: monospace; background-color: white; white-space: pre-wrap; max-width: 50em; max-height:30em; overflow-y:auto; position: absolute; z-index: 10; -webkit-box-shadow: 2px 3px 5px rgba(0, 0, 0, .2); -moz-box-shadow: 2px 3px 5px rgba(0, 0, 0, .2); box-shadow: 2px 3px 5px rgba(0, 0, 0, .2); transition: opacity 1s; -moz-transition: opacity 1s; -webkit-transition: opacity 1s; -o-transition: opacity 1s; -ms-transition: opacity 1s; } .Ace-Tern-tooltip-boxclose { position:absolute; top:0; right:3px; color:red; } .Ace-Tern-tooltip-boxclose:hover { background-color:yellow; } .Ace-Tern-tooltip-boxclose:before { content:'×'; cursor:pointer; font-weight:bold; font-size:larger; } .Ace-Tern-completion { padding-left: 12px; position: relative; } .Ace-Tern-completion:before { position: absolute; left: 0; bottom: 0; border-radius: 50%; font-weight: bold; height: 13px; width: 13px; font-size:11px; /*BYM*/ line-height: 14px; text-align: center; color: white; -moz-box-sizing: border-box; -webkit-box-sizing: border-box; box-sizing: border-box; } .Ace-Tern-completion-unknown:before { content:'?'; background: #4bb; } .Ace-Tern-completion-object:before { content:'O'; background: #77c; } .Ace-Tern-completion-fn:before { content:'F'; background: #7c7; } .Ace-Tern-completion-array:before { content:'A'; background: #c66; } .Ace-Tern-completion-number:before { content:'1'; background: #999; } .Ace-Tern-completion-string:before { content:'S'; background: #999; } .Ace-Tern-completion-bool:before { content:'B'; background: #999; } .Ace-Tern-completion-guess { color: #999; } .Ace-Tern-hint-doc { max-width: 35em; } .Ace-Tern-fhint-guess { opacity: .7; } .Ace-Tern-fname { color: black; } .Ace-Tern-farg { color: #70a; } .Ace-Tern-farg-current { color: #70a; font-weight:bold; font-size:larger; text-decoration:underline; } .Ace-Tern-farg-current-description { font-style:italic; margin-top:2px; color:black; } .Ace-Tern-farg-current-name { font-weight:bold; } .Ace-Tern-type { color: #07c; font-size:smaller; } .Ace-Tern-jsdoc-tag { color: #B93A38; text-transform: lowercase; font-size:smaller; font-weight:600; } .Ace-Tern-jsdoc-param-wrapper{ /*background-color: #FFFFE3; padding:3px;*/ } .Ace-Tern-jsdoc-tag-param-child{ display:inline-block; width:0px; } .Ace-Tern-jsdoc-param-optionalWrapper { font-style:italic; } .Ace-Tern-jsdoc-param-optionalBracket { color:grey; font-weight:bold; } .Ace-Tern-jsdoc-param-name { color: #70a; font-weight:bold; } .Ace-Tern-jsdoc-param-defaultValue { color:grey; } .Ace-Tern-jsdoc-param-description { color:black; } .Ace-Tern-typeHeader-simple{ font-size:smaller; font-weight:bold; display:block; font-style:italic; margin-bottom:3px; color:grey; } .Ace-Tern-typeHeader{ display:block; font-style:italic; margin-bottom:3px; } .Ace-Tern-tooltip-link{font-size:smaller; color:blue;} .ace_autocomplete {width: 400px !important;}", "ace_tern");
-    //#endregion
-
-
-    //#endregion
+    dom.importCssString(".Ace-Tern-tooltip { border: 1px solid silver; border-radius: 3px; color: #444; padding: 2px 5px; padding-right:15px; font-size: 90%; font-family: monospace; background-color: white; white-space: pre-wrap; max-width: 50em; max-height:30em; overflow-y:auto; position: absolute; z-index: 10; -webkit-box-shadow: 2px 3px 5px rgba(0, 0, 0, .2); -moz-box-shadow: 2px 3px 5px rgba(0, 0, 0, .2); box-shadow: 2px 3px 5px rgba(0, 0, 0, .2); transition: opacity 1s; -moz-transition: opacity 1s; -webkit-transition: opacity 1s; -o-transition: opacity 1s; -ms-transition: opacity 1s; } .Ace-Tern-tooltip-boxclose { position:absolute; top:0; right:3px; color:red; } .Ace-Tern-tooltip-boxclose:hover { background-color:yellow; } .Ace-Tern-tooltip-boxclose:before { content:'×'; cursor:pointer; font-weight:bold; font-size:larger; } .Ace-Tern-completion { padding-left: 12px; position: relative; } .Ace-Tern-completion:before { position: absolute; left: 0; bottom: 0; border-radius: 50%; font-weight: bold; height: 13px; width: 13px; font-size:11px; line-height: 14px; text-align: center; color: white; -moz-box-sizing: border-box; -webkit-box-sizing: border-box; box-sizing: border-box; } .Ace-Tern-completion-unknown:before { content:'?'; background: #4bb; } .Ace-Tern-completion-object:before { content:'O'; background: #77c; } .Ace-Tern-completion-fn:before { content:'F'; background: #7c7; } .Ace-Tern-completion-array:before { content:'A'; background: #c66; } .Ace-Tern-completion-number:before { content:'1'; background: #999; } .Ace-Tern-completion-string:before { content:'S'; background: #999; } .Ace-Tern-completion-bool:before { content:'B'; background: #999; } .Ace-Tern-completion-guess { color: #999; } .Ace-Tern-hint-doc { max-width: 35em; } .Ace-Tern-fhint-guess { opacity: .7; } .Ace-Tern-fname { color: black; } .Ace-Tern-farg { color: #70a; } .Ace-Tern-farg-current { color: #70a; font-weight:bold; font-size:larger; text-decoration:underline; } .Ace-Tern-farg-current-description { font-style:italic; margin-top:2px; color:black; } .Ace-Tern-farg-current-name { font-weight:bold; } .Ace-Tern-type { color: #07c; font-size:smaller; } .Ace-Tern-jsdoc-tag { color: #B93A38; text-transform: lowercase; font-size:smaller; font-weight:600; } .Ace-Tern-jsdoc-param-wrapper{ /*background-color: #FFFFE3; padding:3px;*/ } .Ace-Tern-jsdoc-tag-param-child{ display:inline-block; width:0px; } .Ace-Tern-jsdoc-param-optionalWrapper { font-style:italic; } .Ace-Tern-jsdoc-param-optionalBracket { color:grey; font-weight:bold; } .Ace-Tern-jsdoc-param-name { color: #70a; font-weight:bold; } .Ace-Tern-jsdoc-param-defaultValue { color:grey; } .Ace-Tern-jsdoc-param-description { color:black; } .Ace-Tern-typeHeader-simple{ font-size:smaller; font-weight:bold; display:block; font-style:italic; margin-bottom:3px; color:grey; } .Ace-Tern-typeHeader{ display:block; font-style:italic; margin-bottom:3px; } .Ace-Tern-tooltip-link{font-size:smaller; color:blue;} .ace_autocomplete {width: 400px !important;}", "ace_tern");
 
 });
+
+ace.define("ace/tern/tern",["require","exports","module","ace/config","ace/snippets","ace/autocomplete/text_completer","ace/autocomplete","ace/tern/tern_server","ace/editor"], function (require, exports, module) {
+    "use strict";
+    var config = require("../config");
+    var snippetManager = require("../snippets").snippetManager;
+    var snippetCompleter = {
+        getCompletions: function (editor, session, pos, prefix, callback) {
+            var snippetMap = snippetManager.snippetMap;
+            var completions = [];
+            snippetManager.getActiveScopes(editor).forEach(function (scope) {
+                var snippets = snippetMap[scope] || [];
+                for (var i = snippets.length; i--;) {
+                    var s = snippets[i];
+                    var caption = s.name || s.tabTrigger;
+                    if (!caption) continue;
+                    completions.push({
+                        caption: caption,
+                        snippet: s.content,
+                        meta: s.tabTrigger && !s.name ? s.tabTrigger + "\u21E5 " : "snippet"
+                    });
+                }
+            }, this);
+            callback(null, completions);
+        }
+    };
+    var textCompleter = require("../autocomplete/text_completer");
+    var keyWordCompleter = {
+        getCompletions: function (editor, session, pos, prefix, callback) {
+            var state = editor.session.getState(pos.row);
+            var completions = session.$mode.getCompletions(state, session, pos, prefix);
+            callback(null, completions);
+        }
+    };
+    var completers = [snippetCompleter, textCompleter, keyWordCompleter];
+    exports.setCompleters = function (val) {
+        completers = val || [];
+    };
+
+    exports.addCompleter = function (completer) {
+        completers.push(completer);
+    };
+
+    var expandSnippet = {
+        name: "expandSnippet",
+        exec: function (editor) {
+            var success = snippetManager.expandWithTab(editor);
+            if (!success) editor.execCommand("indent");
+        },
+        bindKey: "tab"
+    };
+
+    var loadSnippetsForMode = function (mode) {
+        var id = mode.$id;
+        if (!snippetManager.files)
+            snippetManager.files = {};
+        loadSnippetFile(id);
+        if (mode.modes)
+            mode.modes.forEach(loadSnippetsForMode);
+    };
+
+    var loadSnippetFile = function (id) {
+        if (!id || snippetManager.files[id])
+            return;
+        var snippetFilePath = id.replace("mode", "snippets");
+        snippetManager.files[id] = {};
+        config.loadModule(snippetFilePath, function (m) {
+            if (m) {
+                snippetManager.files[id] = m;
+                if (!m.snippets && m.snippetText)
+                    m.snippets = snippetManager.parseSnippetFile(m.snippetText);
+                snippetManager.register(m.snippets || [], m.scope);
+                if (m.includeScopes) {
+                    snippetManager.snippetMap[m.scope].includeScopes = m.includeScopes;
+                    m.includeScopes.forEach(function (x) {
+                        loadSnippetFile("ace/mode/" + x);
+                    });
+                }
+            }
+        });
+    };
+
+    function getCompletionPrefix(editor) {
+        var pos = editor.getCursorPosition();
+        var line = editor.session.getLine(pos.row);
+        var prefix;
+        editor.completers.forEach(function (completer) {
+            if (completer.identifierRegexps) {
+                completer.identifierRegexps.forEach(function (identifierRegex) {
+                    if (!prefix && identifierRegex)
+                        prefix = util.retrievePrecedingIdentifier(line, pos.column, identifierRegex);
+                });
+            }
+        });
+        return prefix || util.retrievePrecedingIdentifier(line, pos.column);
+    }
+
+    var doLiveAutocomplete = function (e) {
+        var editor = e.editor;
+        var text = e.args || "";
+        var hasCompleter = editor.completer && editor.completer.activated;
+        if (e.command.name === "backspace") {
+            if (hasCompleter && !getCompletionPrefix(editor))
+                editor.completer.detach();
+        }
+        else if (e.command.name === "insertstring") {
+            var prefix = getCompletionPrefix(editor);
+            if (prefix && !hasCompleter) {
+                if (!editor.completer) {
+                    editor.completer = new Autocomplete();
+                }
+                editor.completer.autoInsert = false;
+                editor.completer.showPopup(editor);
+            }
+        }
+    };
+    var Autocomplete = require("../autocomplete").Autocomplete;
+    Autocomplete.startCommand = {
+        name: "startAutocomplete",
+        exec: function (editor, e) {
+            if (!editor.completer) {
+                editor.completer = new Autocomplete();
+            }
+            editor.completers = [];
+            if (editor.$enableSnippets) { //snippets are allowed with or without tern
+                editor.completers.push(snippetCompleter);
+            }
+
+            if (editor.ternServer && editor.$enableTern) {
+                if (editor.ternServer.enabledAtCurrentLocation(editor)) {
+                    editor.completers.push(editor.ternServer);
+                    editor.ternServer.aceTextCompletor = textCompleter; //9.30.2014- give tern the text completor
+                }
+                else {
+                    if (editor.$enableBasicAutocompletion) {
+                        editor.completers.push(textCompleter, keyWordCompleter);
+                    }
+                }
+            }
+            else { //tern not enabled
+                if (editor.$enableBasicAutocompletion) {
+                    editor.completers.push(textCompleter, keyWordCompleter);
+                }
+            }
+            editor.completer.showPopup(editor);
+            editor.completer.cancelContextMenu();
+        },
+        bindKey: "Ctrl-Space|Ctrl-Shift-Space|Alt-Space"
+    };
+    var onChangeMode = function (e, editor) {
+        loadSnippetsForMode(editor.session.$mode);
+    };
+    var ternOptions = {};
+
+    var TernServer = require("./tern_server").TernServer;
+    var aceTs;
+    var createTernServer = function (cb) {
+        var src = ternOptions.workerScript || config.moduleUrl('worker/tern');
+        if (ternOptions.useWorker === false) {
+            var id = 'ace_tern_files';
+            if (document.getElementById(id)) inner();
+            else {
+                var el = document.createElement('script');
+                el.setAttribute('id', id);
+                document.head.appendChild(el);
+                el.onload = inner;
+                el.setAttribute('src', src);
+                console.info('el',el);
+            }
+        }
+        else inner();
+
+        function inner() {
+            if (!ternOptions.workerScript) ternOptions.workerScript = src;
+            aceTs = new TernServer(ternOptions);
+            cb();
+        }
+    };
+    var editor_for_OnCusorChange = null;
+    var debounceArgHints;
+    var onCursorChange_Tern = function (e, editor_getSession_selection) {
+        clearTimeout(debounceArgHints);
+        debounceArgHints = setTimeout(function () {
+            editor_for_OnCusorChange.ternServer.updateArgHints(editor_for_OnCusorChange);
+        }, 10);
+    };
+    var onAfterExec_Tern = function (e, commandManager) {
+        if (e.command.name === "insertstring" && e.args === ".") {
+            if (e.editor.ternServer && e.editor.ternServer.enabledAtCurrentLocation(e.editor)) {
+                var pos = e.editor.getSelectionRange().end;
+                var tok = e.editor.session.getTokenAt(pos.row, pos.column);
+                if (tok) {
+                    if (tok.type !== 'string' && tok.type.toString().indexOf('comment') === -1) {
+                        try {
+                            e.editor.ternServer.lastAutoCompleteFireTime = null; //reset since this was not triggered by user firing command but triggered automatically
+                        }
+                        catch (ex) {}
+                        e.editor.execCommand("startAutocomplete");
+                    }
+                }
+            }
+        }
+    };
+
+    completers.push(aceTs);
+    exports.server = aceTs;
+
+    var Editor = require("../editor").Editor;
+    config.defineOptions(Editor.prototype, "editor", {
+        enableTern: {
+            set: function (val) {
+                var self = this;
+                if (typeof val === 'object') {
+                    ternOptions = val;
+                    val = true;
+                }
+                if (val) {
+                    editor_for_OnCusorChange = self; //hack
+                    createTernServer(function () {
+                        self.completers = completers;
+                        self.ternServer = aceTs;
+                        self.commands.addCommand(Autocomplete.startCommand);
+                        self.getSession().selection.on('changeCursor', onCursorChange_Tern);
+                        self.commands.on('afterExec', onAfterExec_Tern);
+                        aceTs.bindAceKeys(self);
+                        if (ternOptions.startedCb) ternOptions.startedCb();
+                    });
+                }
+                else {
+                    delete self.ternServer;
+                    self.getSession().selection.off('changeCursor', onCursorChange_Tern);
+                    self.commands.off('afterExec', onAfterExec_Tern);
+                    if (!self.enableBasicAutocompletion) {
+                        self.commands.removeCommand(Autocomplete.startCommand);
+                    }
+                }
+            },
+            value: false
+        },
+        enableBasicAutocompletion: {
+            set: function (val) {
+                if (val) {
+                    this.completers = completers;
+                    this.commands.addCommand(Autocomplete.startCommand);
+                }
+                else {
+                    if (!this.$enableTern) {
+                        this.commands.removeCommand(Autocomplete.startCommand);
+                    }
+                }
+            },
+            value: false
+        },
+        enableSnippets: {
+            set: function (val) {
+                if (val) {
+                    this.commands.addCommand(expandSnippet);
+                    this.on("changeMode", onChangeMode);
+                    onChangeMode(null, this);
+                }
+                else {
+                    this.commands.removeCommand(expandSnippet);
+                    this.off("changeMode", onChangeMode);
+                }
+            },
+            value: false
+        }
+    });
+});
+                (function() {
+                    ace.require(["ace/tern/tern"], function() {});
+                })();
+            
