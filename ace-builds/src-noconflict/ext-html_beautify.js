@@ -198,7 +198,20 @@ ace.define('ace/ext/html_beautify', ['require', 'exports', 'module', 'ace/range'
             var tok = editor.session.getTokenAt(pos.row, pos.column);
             if (tok) {
                 if (tok.type !== 'string' && tok.type.toString().indexOf('comment') === -1) {
+                    //bracket just inserted - move back one character before jumpting to matching or it wont work correctly (executing it after the newly inserted char can cause issues in some instances)
+                    var start = editor.selection.getRange().start;
+                    start.column--;
+                    editor.selection.setSelectionRange(Range.fromPoints(start, start));
                     editor.jumpToMatching(true); //jumpto and select
+                
+                    //now move end of selection back one char, to include the newly inserted bracket, and start of selection one char to include start bracket
+                    var end = editor.selection.getRange().end;
+                    end.column++;
+                    start = editor.selection.getRange().start;
+                    start.column--;
+                    editor.selection.setSelectionRange(Range.fromPoints(start, end));
+                
+                    //now beautify the selection
                     editor.execCommand('beautify', true);
                 }
             }
