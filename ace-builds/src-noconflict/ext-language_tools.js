@@ -374,7 +374,6 @@ var SnippetManager = function() {
                     scope = "php";
             }
         }
-        
         return scope;
     };
 
@@ -386,6 +385,7 @@ var SnippetManager = function() {
             scopes.push.apply(scopes, snippetMap[scope].includeScopes);
         }
         scopes.push("_");
+    
         return scopes;
     };
 
@@ -1835,8 +1835,11 @@ var loadSnippetsForMode = function(mode) {
     if (!snippetManager.files)
         snippetManager.files = {};
     loadSnippetFile(id);
-    if (mode.modes)
-        mode.modes.forEach(loadSnippetsForMode);
+    if (mode.$modes) {
+        for (var m in mode.$modes) {
+            loadSnippetsForMode(mode.$modes[m]);
+        }
+    }
 };
 
 var loadSnippetFile = function(id) {

@@ -374,7 +374,6 @@ var SnippetManager = function() {
                     scope = "php";
             }
         }
-        
         return scope;
     };
 
@@ -386,6 +385,7 @@ var SnippetManager = function() {
             scopes.push.apply(scopes, snippetMap[scope].includeScopes);
         }
         scopes.push("_");
+    
         return scopes;
     };
 
@@ -3728,8 +3728,11 @@ ace.define("ace/tern/tern",["require","exports","module","ace/config","ace/snipp
         if (!snippetManager.files)
             snippetManager.files = {};
         loadSnippetFile(id);
-        if (mode.modes)
-            mode.modes.forEach(loadSnippetsForMode);
+        if (mode.$modes) {
+            for (var m in mode.$modes) {
+                loadSnippetsForMode(mode.$modes[m]);
+            }
+        }
     };
 
     var loadSnippetFile = function (id) {
@@ -3838,7 +3841,6 @@ ace.define("ace/tern/tern",["require","exports","module","ace/config","ace/snipp
                 document.head.appendChild(el);
                 el.onload = inner;
                 el.setAttribute('src', src);
-                console.info('el',el);
             }
         }
         else inner();
