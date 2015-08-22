@@ -1849,13 +1849,19 @@ ace.define("ace/tern/tern_server",["require","exports","module","ace/range","ace
         ternRefresh: {
             name: "ternRefresh",
             exec: function (editor) {
-                editor.ternServer.refreshDoc(editor);
+                var full = false;
+                if (editor.ternServer.refreshDocLastCalled != null) {
+                    if (new Date().getTime() - editor.ternServer.refreshDocLastCalled < 1000) { //less than 1 second
+                        full = true;
+                    }
+                }
+                editor.ternServer.refreshDocLastCalled = new Date().getTime();
+                editor.ternServer.refreshDoc(editor, full);
             },
             bindKey: "Alt-R"
-        }
+        },
     };
     var debugCompletions = false;
-
 
     TernServer.prototype = {
         bindAceKeys: function (editor) {
@@ -1896,13 +1902,23 @@ ace.define("ace/tern/tern_server",["require","exports","module","ace/range","ace
             var found = this.docs[name];
             if (found && found.changed) sendDoc(this, found);
         },
-        refreshDoc: function (editor) {
+        refreshDoc: function (editor, full) {
+            var showTip = function (msg) {
+                var el = document.createElement('span');
+                el.setAttribute('style', 'color:green;');
+                el.innerHTML = msg;
+                tempTooltip(editor, el, 2000);
+            };
+
+            if (full) {
+                this.docChanged(editor);
+                showTip('Tern fully refreshed (reloaded current doc and all refs)');
+                return;
+            }
+
             var doc = findDoc(this, editor);
             sendDoc(this, doc);
-            var el = document.createElement('span');
-            el.setAttribute('style', 'color:green;');
-            el.innerHTML = "Tern document refreshed";
-            tempTooltip(editor, el, 1000);
+            showTip('Tern document refreshed <div style="color:gray; font-size:smaller;">(press hotkey twice in  &lt; 1 second to do a full reload including refs)</div>');
         },
         getCompletions: function (editor, session, pos, prefix, callback) {
             getCompletions(this, editor, session, pos, prefix, callback);
@@ -2161,7 +2177,10 @@ ace.define("ace/tern/tern_server",["require","exports","module","ace/range","ace
                 }
             }
             catch (ex) {
-                showError('autoCompleteFiredTwiceInThreshold error:' + ex);
+                showError({
+                    msg: 'autoCompleteFiredTwiceInThreshold',
+                    err: ex
+                });
             }
             return false;
         };
@@ -2226,9 +2245,9 @@ ace.define("ace/tern/tern_server",["require","exports","module","ace/range","ace
                                 return {
                                     doc: item.doc,
                                     type: item.type,
-                                    caption: item.name,
-                                    value: item.name,
-                                    meta: 'aceTextCompletor'
+                                    caption: item.caption,
+                                    value: item.value,
+                                    meta: 'localText'
                                 };
                             });
                             var otherCompletionsContains = function (value, minLength) {
@@ -2255,7 +2274,10 @@ ace.define("ace/tern/tern_server",["require","exports","module","ace/range","ace
                         });
                     }
                     catch (ex) {
-                        showError(ts, editor, 'ace text completor error:' + ex);
+                        showError(ts, editor, {
+                            msg: 'ace text completor error',
+                            err: ex
+                        });
                     }
                     if (debugCompletions) console.timeEnd('aceTextCompletor');
                 }
@@ -2315,7 +2337,10 @@ ace.define("ace/tern/tern_server",["require","exports","module","ace/range","ace
                     ts.lastAutoCompleteFireTime = new Date().getTime();
                 }
                 catch (ex) {
-                    showError(ts, editor, 'error with last autoCompleteFireTime: ' + ex);
+                    showError(ts, editor, {
+                        msg: 'error with last autoCompleteFireTime ',
+                        err: ex
+                    });
                 }
             });
     }
@@ -2741,8 +2766,9 @@ ace.define("ace/tern/tern_server",["require","exports","module","ace/range","ace
                 return;
             }
             var totalRefs = document.createElement("div");
-            totalRefs.setAttribute("style", "font-style:italic; margin-bottom:3px;");
+            totalRefs.setAttribute("style", "font-style:italic; margin-bottom:3px; cursor:help");
             totalRefs.innerHTML = data.refs.length + " References Found";
+            totalRefs.setAttribute('title', 'Use up and down arrow keys to navigate between references. \n\nPress Esc while focused on the list to close the popup (or use the close button in the top right corner).\n\n This is not guaranteed to find references in other files or references for non-private variables.');
             header.appendChild(totalRefs);
             var refInput = document.createElement("select");
             refInput.setAttribute("multiple", "multiple");
@@ -2800,6 +2826,12 @@ ace.define("ace/tern/tern_server",["require","exports","module","ace/range","ace
                 height = height > 175 ? 175 : height;
                 refInput.style.height = height + "px";
                 tip.appendChild(refInput);
+                refInput.focus(); //focus on the input (user can press down key to start traversing refs)
+                refInput.addEventListener('keydown', function (e) {
+                    if (e && e.keyCode && e.keyCode == 27) {
+                        remove(tip);
+                    }
+                });
             };
 
             for (var i = 0; i < data.refs.length; i++) {
@@ -3259,6 +3291,7 @@ ace.define("ace/tern/tern_server",["require","exports","module","ace/range","ace
                 setTimeout(fadeThistip, fadeOutDuration);
             }
         }
+
         return node;
     }
     function moveTooltip(tip, x, y, editor) {
@@ -3289,19 +3322,43 @@ ace.define("ace/tern/tern_server",["require","exports","module","ace/range","ace
     }
     function showError(ts, editor, msg, noPopup) {
         try {
-            console.log('ternError', msg);
-            if (!noPopup) {
-                var el = elt('span', null, msg);
+            var message = '',
+                details = '';
+
+            var isError = function (o) {
+                return o && o.name && o.stack && o.message;
+            };
+
+            if (isError(msg)) { //msg is an Error object
+                message = msg.name + ': ' + msg.message;
+                details = msg.stack;
+            }
+            else if (msg.msg && msg.err) { //msg is object that has string msg and Error object
+                message = msg.msg;
+                if (isError(msg.err)) {
+                    message += ': ' + msg.err.message;
+                    details = msg.err.stack;
+                }
+            }
+            else { //msg is string message;
+                message = msg;
+                details = 'details not supplied. current stack:\n' + new Error().stack;
+            }
+
+            console.log('ternError:\t ', message, '\n details:', details); //log the message and deatils (if any)
+
+            if (!noPopup) { //show popup
+                var el = elt('span', null, message);
                 el.style.color = 'red';
                 tempTooltip(editor, el);
             }
         }
         catch (ex) {
             setTimeout(function () {
-                if (typeof msg === undefined) {
-                    msg = " (no error passed)";
+                if (typeof message === undefined) {
+                    message = " (no error passed)";
                 }
-                throw new Error('tern show error failed.' + msg + '\n\n fail error:' + ex);
+                throw new Error('tern show error failed.' + message + '\n\n fail error: ' + ex.name + '\n' + ex.message + '\n' + ex.stack);
             }, 0);
         }
     }
@@ -3365,8 +3422,11 @@ ace.define("ace/tern/tern_server",["require","exports","module","ace/range","ace
             }
             return;
         }
-        curDoc.doc.gotoLine(toAceLoc(start).row, toAceLoc(start).column || 0); //this will make sure that the line is expanded
-        var sel = curDoc.doc.getSession().getSelection(); // sel.selectionLead.setPosistion();// sel.selectionAnchor.setPosistion();
+        var pos = toAceLoc(start);
+        curDoc.doc.gotoLine(pos.row, pos.column || 0); //this will make sure that the line is expanded
+        curDoc.doc.getSession().unfold(pos); //gotoLine is supposed to unfold but its not working properly.. this ensures it gets unfolded
+
+        var sel = curDoc.doc.getSession().getSelection();
         sel.setSelectionRange({
             start: toAceLoc(start),
             end: toAceLoc(end)
@@ -3546,29 +3606,62 @@ ace.define("ace/tern/tern_server",["require","exports","module","ace/range","ace
                 }
             }
         }
+        var resultMsgEl = document.createElement('span'),
+            addFileDoneCount = 0,
+            addFileDoneCountCompleted = 0;
+        var addFileDone = function (msg, isErr) {
+            addFileDoneCountCompleted++;
+        
+            var el = document.createElement('div');
+            el.setAttribute('style', 'font-size:smaller; font-style:italic; color:' + (isErr ? 'red' : 'gray'));
+            el.textContent = msg;
+        
+            resultMsgEl.appendChild(el);
+        
+            if (addFileDoneCount == addFileDoneCountCompleted) {
+                tempTooltip(editor, resultMsgEl);
+            }
+        };
         var ReadFile_AddToTern = function (path) {
             try {
                 var isFullUrl = path.toLowerCase().indexOf("http") === 0;
                 if (isFullUrl || isBrowser) {
+                    addFileDoneCount++;
                     var xhr = new XMLHttpRequest();
                     xhr.open("get", path, true);
                     xhr.send();
                     xhr.onreadystatechange = function () {
                         if (xhr.readyState == 4) {
-                            console.log('adding web reference: ' + path);
-                            editor.ternServer.addDoc(path.replace(/^.*[\\\/]/, ''), xhr.responseText);
+                            if (xhr.status == 200) {
+                                console.log('adding web reference: ' + path);
+                                addFileDone('adding web reference: ' + path);
+                                editor.ternServer.addDoc(path, xhr.responseText);
+                            }
+                            else {
+                                if (xhr.status == 404) { //not found
+                                    console.log('error adding web reference (not found): ' + path, xhr);
+                                    addFileDone('error adding web reference (not found): ' + path, true);
+                                }
+                                else {
+                                    console.log('error adding web reference (unknown error, see xhr): ' + path, xhr);
+                                    addFileDone('error adding web reference (unknown error, see console): ' + path, true);
+                                }
+                            }
                         }
                     };
                 }
                 else { //local
+                    addFileDoneCount++;
                     resolveFilePath(ts, path, function (resolvedPath) {
                         getFile(ts, resolvedPath, function (err, data) {
                             if (err || !data) {
                                 console.log('error getting file: ' + resolvedPath, err);
+                                addFileDone('error getting file: ' + resolvedPath + '(see console for details)', true);
                             }
                             else {
                                 ts.addDoc(resolvedPath, data.toString());
                                 console.log('adding reference: ' + resolvedPath);
+                                addFileDone('adding reference: ' + resolvedPath);
                             }
                         });
                     });
