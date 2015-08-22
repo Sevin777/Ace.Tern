@@ -105,6 +105,7 @@
         editor.getSession().setUseWrapMode(true);
         editor.getSession().setWrapLimitRange(null, null);
         editor.setShowPrintMargin(false);
+        editor.$blockScrolling = Infinity;//prevents ace from logging annoying warnings
         //#endregion
         
         ace.config.loadModule('ace/ext/tern', function () {
