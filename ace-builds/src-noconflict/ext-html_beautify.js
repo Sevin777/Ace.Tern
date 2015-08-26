@@ -35,7 +35,7 @@ ace.define('ace/ext/html_beautify', ['require', 'exports', 'module', 'ace/range'
         brace_style: 'end-expand' /*[collapse|expand|end-expand]*/ ,
         unescape_strings: false,
         wrap_line_length: '0',
-        space_after_anon_function: true,
+        space_after_anon_function: false,
         max_char: 0 //html beautifys wrap option
     };
     exports.options.preserve_newlines = exports.options.max_preserve_newlines !== -1;
