@@ -157,10 +157,14 @@
         });
         
         //#region not relevant to tern (custom beautify plugin) and demo loading
-        ace.config.loadModule('ace/ext/html_beautify', function () {
+        ace.config.loadModule('ace/ext/html_beautify', function (beautify) {
             editor.setOptions({
                 autoBeautify: true
             });
+            
+            //modify beautify options as needed:
+            window.beautifyOptions = beautify.options;
+            console.log('beautifyOptions:', beautifyOptions);
         });
         
         function GetFile(file, c) {
