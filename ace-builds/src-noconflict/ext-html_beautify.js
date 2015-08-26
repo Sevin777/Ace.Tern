@@ -87,7 +87,7 @@ ace.define('ace/ext/html_beautify', ['require', 'exports', 'module', 'ace/range'
             options.unescape_strings = true;
             options.jslint_happy = false;
             options.indent_char = ' ';
-            options.max_preserve_newlines = 2;
+            options.max_preserve_newlines = 3;
             options.preserve_newlines = options.max_preserve_newlines !== -1;
             options.keep_array_indentation = false;
             options.break_chained_methods = false;
@@ -185,6 +185,7 @@ ace.define('ace/ext/html_beautify', ['require', 'exports', 'module', 'ace/range'
         }
         //#endregion
     }
+    
     /**
      * handlers for onAfterExec to auto beautify
      */
