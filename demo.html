@@ -159,7 +159,10 @@
         //#region not relevant to tern (custom beautify plugin) and demo loading
         ace.config.loadModule('ace/ext/html_beautify', function (beautify) {
             editor.setOptions({
-                autoBeautify: true
+                // beautify when closing bracket typed in javascript or css mode
+                autoBeautify: true,
+                // this enables the plugin to work with hotkeys (ctrl+b to beautify)
+                htmlBeautify: true,
             });
             
             //modify beautify options as needed:

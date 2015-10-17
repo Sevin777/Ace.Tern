@@ -5,7 +5,7 @@
  * This code works to beautify xml, html, css, javascript, and json.
  * Also includes command that removes all unncessary blank and EOL space (does not have any intelligence like a uglifier).
  */
-ace.define('ace/ext/html_beautify', ['require', 'exports', 'module', 'ace/range', 'ace/editor', 'ace/config'], function (require, exports, module) {
+ace.define('ace/ext/html_beautify', ['require', 'exports', 'module', 'ace/range', 'ace/editor', 'ace/config'], function(require, exports, module) {
 
     var config = require("../config");
     var Range = ace.require("ace/range").Range;
@@ -224,35 +224,48 @@ ace.define('ace/ext/html_beautify', ['require', 'exports', 'module', 'ace/range'
 
     config.defineOptions(Editor.prototype, "editor", {
         autoBeautify: {
-            set: function (val) {
+            set: function(val) {
                 if (val) this.commands.on('afterExec', onAfterExec_Beautify);
                 else this.commands.off('afterExec', onAfterExec_Beautify);
             },
             value: false
         },
+        /**
+         * this call is required to turn the plugin on (because it needs the editor variable - which is what this is scoped to below)
+         */
+        htmlBeautify: {
+            set: function(val) {
+                if (!val) {
+                    this.commands.removeCommand('beautify');
+                    this.commands.removeCommand('removeBlank');
+                    return;
+                }
+                this.commands.addCommand({
+                    name: 'beautify',
+                    bindKey: {
+                        mac: "Command-B",
+                        win: "Ctrl-B"
+                    },
+                    exec: beautify,
+                    readOnly: false,
+                });
+
+                this.commands.addCommand({
+                    name: 'removeBlank',
+                    bindKey: {
+                        mac: "Command-Shift-B",
+                        win: "Ctrl-Shift-B"
+                    },
+                    exec: function(editor) {
+                        beautify(editor, false, true);
+                    },
+                    readOnly: false
+                });
+            },
+            value: false
+        }
     });
 
-    editor.commands.addCommand({
-        name: 'beautify',
-        bindKey: {
-            mac: "Command-B",
-            win: "Ctrl-B"
-        },
-        exec: beautify,
-        readOnly: false,
-    });
-
-    editor.commands.addCommand({
-        name: 'removeBlank',
-        bindKey: {
-            mac: "Command-Shift-B",
-            win: "Ctrl-Shift-B"
-        },
-        exec: function (editor) {
-            beautify(editor, false, true);
-        },
-        readOnly: false
-    });
 
     //allow using some things outside of this scope mainly for testing
     exports.getCurrentMode = getCurrentMode;
@@ -271,7 +284,7 @@ ace.define('ace/ext/html_beautify', ['require', 'exports', 'module', 'ace/range'
  * v1.5.10
  * @link https://raw.githubusercontent.com/beautify-web/js-beautify/master/js/lib/beautify.js
  */
-ace.define('js_beautify', ['require', 'exports', 'module'], function (require, exports, module) {
+ace.define('js_beautify', ['require', 'exports', 'module'], function(require, exports, module) {
     /*jshint curly:true, eqeqeq:true, laxbreak:true, noempty:false */
     /*
 
@@ -358,10 +371,10 @@ ace.define('js_beautify', ['require', 'exports', 'module'], function (require, e
 
 */
 
-    (function () {
+    (function() {
 
         var acorn = {};
-        (function (exports) {
+        (function(exports) {
             // This section of code is taken from acorn.
             //
             // Acorn was written by Marijn Haverbeke and released under an MIT
@@ -397,7 +410,7 @@ ace.define('js_beautify', ['require', 'exports', 'module'], function (require, e
 
             // Test whether a given character code starts an identifier.
 
-            var isIdentifierStart = exports.isIdentifierStart = function (code) {
+            var isIdentifierStart = exports.isIdentifierStart = function(code) {
                 if (code < 65) return code === 36;
                 if (code < 91) return true;
                 if (code < 97) return code === 95;
@@ -407,7 +420,7 @@ ace.define('js_beautify', ['require', 'exports', 'module'], function (require, e
 
             // Test whether a given character is part of an identifier.
 
-            var isIdentifierChar = exports.isIdentifierChar = function (code) {
+            var isIdentifierChar = exports.isIdentifierChar = function(code) {
                 if (code < 48) return code === 36;
                 if (code < 58) return true;
                 if (code < 65) return false;
@@ -606,7 +619,7 @@ ace.define('js_beautify', ['require', 'exports', 'module'], function (require, e
             flag_store = [];
             set_mode(MODE.BlockStatement);
 
-            this.beautify = function () {
+            this.beautify = function() {
 
                 /*jshint onevar:true */
                 var local_token, sweet_code;
@@ -1608,20 +1621,20 @@ ace.define('js_beautify', ['require', 'exports', 'module'], function (require, e
             var _items = [];
             var _empty = true;
 
-            this.set_indent = function (level) {
+            this.set_indent = function(level) {
                 _character_count = parent.baseIndentLength + level * parent.indent_length
                 _indent_count = level;
             }
 
-            this.get_character_count = function () {
+            this.get_character_count = function() {
                 return _character_count;
             }
 
-            this.is_empty = function () {
+            this.is_empty = function() {
                 return _empty;
             }
 
-            this.last = function () {
+            this.last = function() {
                 if (!this._empty) {
                     return _items[_items.length - 1];
                 }
@@ -1630,13 +1643,13 @@ ace.define('js_beautify', ['require', 'exports', 'module'], function (require, e
                 }
             }
 
-            this.push = function (input) {
+            this.push = function(input) {
                 _items.push(input);
                 _character_count += input.length;
                 _empty = false;
             }
 
-            this.pop = function () {
+            this.pop = function() {
                 var item = null;
                 if (!_empty) {
                     item = _items.pop();
@@ -1646,14 +1659,14 @@ ace.define('js_beautify', ['require', 'exports', 'module'], function (require, e
                 return item;
             }
 
-            this.remove_indent = function () {
+            this.remove_indent = function() {
                 if (_indent_count > 0) {
                     _indent_count -= 1;
                     _character_count -= parent.indent_length
                 }
             }
 
-            this.trim = function () {
+            this.trim = function() {
                 while (this.last() === ' ') {
                     var item = _items.pop();
                     _character_count -= 1;
@@ -1661,7 +1674,7 @@ ace.define('js_beautify', ['require', 'exports', 'module'], function (require, e
                 _empty = _items.length === 0;
             }
 
-            this.toString = function () {
+            this.toString = function() {
                 var result = '';
                 if (!this._empty) {
                     if (_indent_count >= 0) {
@@ -1687,7 +1700,7 @@ ace.define('js_beautify', ['require', 'exports', 'module'], function (require, e
             this.current_line = null;
             this.space_before_token = false;
 
-            this.add_outputline = function () {
+            this.add_outputline = function() {
                 this.previous_line = this.current_line;
                 this.current_line = new OutputLine(this);
                 lines.push(this.current_line);
@@ -1697,12 +1710,12 @@ ace.define('js_beautify', ['require', 'exports', 'module'], function (require, e
             this.add_outputline();
 
 
-            this.get_line_number = function () {
+            this.get_line_number = function() {
                 return lines.length;
             }
 
             // Using object instead of string to allow for later expansion of info about each line
-            this.add_new_line = function (force_newline) {
+            this.add_new_line = function(force_newline) {
                 if (this.get_line_number() === 1 && this.just_added_newline()) {
                     return false; // no newline on start of file
                 }
@@ -1717,12 +1730,12 @@ ace.define('js_beautify', ['require', 'exports', 'module'], function (require, e
                 return false;
             }
 
-            this.get_code = function () {
+            this.get_code = function() {
                 var sweet_code = lines.join('\n').replace(/[\r\n\t ]+$/, '');
                 return sweet_code;
             }
 
-            this.set_indent = function (level) {
+            this.set_indent = function(level) {
                 // Never indent your first output indent at the start of the file
                 if (lines.length > 1) {
                     while (level >= this.indent_cache.length) {
@@ -1736,7 +1749,7 @@ ace.define('js_beautify', ['require', 'exports', 'module'], function (require, e
                 return false;
             }
 
-            this.add_raw_token = function (token) {
+            this.add_raw_token = function(token) {
                 for (var x = 0; x < token.newlines; x++) {
                     this.add_outputline();
                 }
@@ -1745,19 +1758,19 @@ ace.define('js_beautify', ['require', 'exports', 'module'], function (require, e
                 this.space_before_token = false;
             }
 
-            this.add_token = function (printable_token) {
+            this.add_token = function(printable_token) {
                 this.add_space_before_token();
                 this.current_line.push(printable_token);
             }
 
-            this.add_space_before_token = function () {
+            this.add_space_before_token = function() {
                 if (this.space_before_token && !this.just_added_newline()) {
                     this.current_line.push(' ');
                 }
                 this.space_before_token = false;
             }
 
-            this.remove_redundant_indentation = function (frame) {
+            this.remove_redundant_indentation = function(frame) {
                 // This implementation is effective but has some issues:
                 //     - can cause line wrap to happen too soon due to indent removal
                 //           after wrap points are calculated
@@ -1778,7 +1791,7 @@ ace.define('js_beautify', ['require', 'exports', 'module'], function (require, e
                 }
             }
 
-            this.trim = function (eat_newlines) {
+            this.trim = function(eat_newlines) {
                 eat_newlines = (eat_newlines === undefined) ? false : eat_newlines;
 
                 this.current_line.trim(indent_string, baseIndentString);
@@ -1792,11 +1805,11 @@ ace.define('js_beautify', ['require', 'exports', 'module'], function (require, e
                 this.previous_line = lines.length > 1 ? lines[lines.length - 2] : null;
             }
 
-            this.just_added_newline = function () {
+            this.just_added_newline = function() {
                 return this.current_line.is_empty();
             }
 
-            this.just_added_blankline = function () {
+            this.just_added_blankline = function() {
                 if (this.just_added_newline()) {
                     if (lines.length === 1) {
                         return true; // start of the file and newline = blank
@@ -1811,7 +1824,7 @@ ace.define('js_beautify', ['require', 'exports', 'module'], function (require, e
 
 
         //#region custom for ace
-        var Token = function (type, text, newlines, whitespace_before, mode, parent) {
+        var Token = function(type, text, newlines, whitespace_before, mode, parent) {
             this.type = type;
             this.text = text;
             this.comments_before = [];
@@ -1848,7 +1861,7 @@ ace.define('js_beautify', ['require', 'exports', 'module'], function (require, e
             var n_newlines, whitespace_before_token, in_html_comment, tokens, parser_pos;
             var input_length;
 
-            this.tokenize = function () {
+            this.tokenize = function() {
                 // cache the source's length.
                 input_length = input.length
                 parser_pos = 0;
@@ -2376,7 +2389,7 @@ ace.define('js_beautify', ['require', 'exports', 'module'], function (require, e
 
         if (typeof define === "function" && define.amd) {
             // Add support for AMD ( https://github.com/amdjs/amdjs-api/wiki/AMD#defineamd-property- )
-            define([], function () {
+            define([], function() {
                 return {
                     js_beautify: js_beautify
                 };
@@ -2404,7 +2417,7 @@ ace.define('js_beautify', ['require', 'exports', 'module'], function (require, e
  * v1.5.10
  * @link https://raw.githubusercontent.com/beautify-web/js-beautify/master/js/lib/beautify-css.js
  */
-ace.define('css_beautify', ['require', 'exports', 'module'], function (require, exports, module) {
+ace.define('css_beautify', ['require', 'exports', 'module'], function(require, exports, module) {
     /*jshint curly:true, eqeqeq:true, laxbreak:true, noempty:false */
     /*
 
@@ -2467,7 +2480,7 @@ ace.define('css_beautify', ['require', 'exports', 'module'], function (require, 
     // http://www.w3.org/TR/CSS21/syndata.html#tokenization
     // http://www.w3.org/TR/css3-syntax/
 
-    (function () {
+    (function() {
         function css_beautify(source_text, options) {
             options = options || {};
             source_text = source_text || '';
@@ -2629,22 +2642,22 @@ ace.define('css_beautify', ['require', 'exports', 'module'], function (require, 
             }
 
             var print = {};
-            print["{"] = function (ch) {
+            print["{"] = function(ch) {
                 print.singleSpace();
                 output.push(ch);
                 print.newLine();
             };
-            print["}"] = function (ch) {
+            print["}"] = function(ch) {
                 print.newLine();
                 output.push(ch);
                 print.newLine();
             };
 
-            print._lastCharWhitespace = function () {
+            print._lastCharWhitespace = function() {
                 return whiteRe.test(output[output.length - 1]);
             };
 
-            print.newLine = function (keepWhitespace) {
+            print.newLine = function(keepWhitespace) {
                 if (output.length) {
                     if (!keepWhitespace && output[output.length - 1] !== '\n') {
                         print.trim();
@@ -2657,19 +2670,19 @@ ace.define('css_beautify', ['require', 'exports', 'module'], function (require, 
                     }
                 }
             };
-            print.singleSpace = function () {
+            print.singleSpace = function() {
                 if (output.length && !print._lastCharWhitespace()) {
                     output.push(' ');
                 }
             };
 
-            print.preserveSingleSpace = function () {
+            print.preserveSingleSpace = function() {
                 if (isAfterSpace) {
                     print.singleSpace();
                 }
             };
 
-            print.trim = function () {
+            print.trim = function() {
                 while (print._lastCharWhitespace()) {
                     output.pop();
                 }
@@ -2912,7 +2925,7 @@ ace.define('css_beautify', ['require', 'exports', 'module'], function (require, 
         /*global define */
         if (typeof define === "function" && define.amd) {
             // Add support for AMD ( https://github.com/amdjs/amdjs-api/wiki/AMD#defineamd-property- )
-            define([], function () {
+            define([], function() {
                 return {
                     css_beautify: css_beautify
                 };
@@ -2939,7 +2952,7 @@ ace.define('css_beautify', ['require', 'exports', 'module'], function (require, 
  * v1.5.10
  * @link https://raw.githubusercontent.com/beautify-web/js-beautify/master/js/lib/beautify-html.js
  */
-ace.define('html_beautify', ['require', 'exports', 'module'], function (require, exports, module) {
+ace.define('html_beautify', ['require', 'exports', 'module'], function(require, exports, module) {
     /*jshint curly:true, eqeqeq:true, laxbreak:true, noempty:false */
     /*
 
@@ -3013,7 +3026,7 @@ ace.define('html_beautify', ['require', 'exports', 'module'], function (require,
     });
 */
 
-    (function () {
+    (function() {
 
         function trim(s) {
             return s.replace(/^\s+|\s+$/g, '');
@@ -3094,7 +3107,7 @@ ace.define('html_beautify', ['require', 'exports', 'module'], function (require,
                     whitespace: "\n\r\t ".split(''),
                     single_token: 'br,input,link,meta,source,!doctype,basefont,base,area,hr,wbr,param,img,isindex,embed'.split(','), //all the single tags for HTML
                     extra_liners: extra_liners, //for tags that need a line of whitespace before them
-                    in_array: function (what, arr) {
+                    in_array: function(what, arr) {
                         for (var i = 0; i < arr.length; i++) {
                             if (what === arr[i]) {
                                 return true;
@@ -3105,7 +3118,7 @@ ace.define('html_beautify', ['require', 'exports', 'module'], function (require,
                 };
 
                 // Return true if the given text is composed entirely of whitespace.
-                this.is_whitespace = function (text) {
+                this.is_whitespace = function(text) {
                     for (var n = 0; n < text.length; text++) {
                         if (!this.Utils.in_array(text.charAt(n), this.Utils.whitespace)) {
                             return false;
@@ -3114,7 +3127,7 @@ ace.define('html_beautify', ['require', 'exports', 'module'], function (require,
                     return true;
                 };
 
-                this.traverse_whitespace = function () {
+                this.traverse_whitespace = function() {
                     var input_char = '';
 
                     input_char = this.input.charAt(this.pos);
@@ -3135,7 +3148,7 @@ ace.define('html_beautify', ['require', 'exports', 'module'], function (require,
 
                 // Append a space to the given content (string array) or, if we are
                 // at the wrap_line_length, append a newline/indentation.
-                this.space_or_wrap = function (content) {
+                this.space_or_wrap = function(content) {
                     if (this.line_char_count >= this.wrap_line_length) { //insert a line when the wrap_line_length is reached
                         this.print_newline(false, content);
                         this.print_indentation(content);
@@ -3146,7 +3159,7 @@ ace.define('html_beautify', ['require', 'exports', 'module'], function (require,
                     }
                 };
 
-                this.get_content = function () { //function to capture regular content between tags
+                this.get_content = function() { //function to capture regular content between tags
                     var input_char = '',
                         content = [],
                         space = false; //if a space is needed
@@ -3189,7 +3202,7 @@ ace.define('html_beautify', ['require', 'exports', 'module'], function (require,
                     return content.length ? content.join('') : '';
                 };
 
-                this.get_contents_to = function (name) { //get the full content of a script or style to pass to js_beautify
+                this.get_contents_to = function(name) { //get the full content of a script or style to pass to js_beautify
                     if (this.pos === this.input.length) {
                         return ['', 'TK_EOF'];
                     }
@@ -3206,7 +3219,7 @@ ace.define('html_beautify', ['require', 'exports', 'module'], function (require,
                     return content;
                 };
 
-                this.record_tag = function (tag) { //function to record a tag and its parent in this.tags Object
+                this.record_tag = function(tag) { //function to record a tag and its parent in this.tags Object
                     if (this.tags[tag + 'count']) { //check for the existence of this tag type
                         this.tags[tag + 'count']++;
                         this.tags[tag + this.tags[tag + 'count']] = this.indent_level; //and record the present indent level
@@ -3219,7 +3232,7 @@ ace.define('html_beautify', ['require', 'exports', 'module'], function (require,
                     this.tags.parent = tag + this.tags[tag + 'count']; //and make this the current parent (i.e. in the case of a div 'div1')
                 };
 
-                this.retrieve_tag = function (tag) { //function to retrieve the opening tag to the corresponding closer
+                this.retrieve_tag = function(tag) { //function to retrieve the opening tag to the corresponding closer
                     if (this.tags[tag + 'count']) { //if the openener is not in the Object we ignore it
                         var temp_parent = this.tags.parent; //check to see if it's a closable tag.
                         while (temp_parent) { //till we reach '' (the initial value);
@@ -3243,7 +3256,7 @@ ace.define('html_beautify', ['require', 'exports', 'module'], function (require,
                     }
                 };
 
-                this.indent_to_tag = function (tag) {
+                this.indent_to_tag = function(tag) {
                     // Match the indentation level to the last use of this tag, but don't remove it.
                     if (!this.tags[tag + 'count']) {
                         return;
@@ -3260,7 +3273,7 @@ ace.define('html_beautify', ['require', 'exports', 'module'], function (require,
                     }
                 };
 
-                this.get_tag = function (peek) { //function to get a full tag and parse its type
+                this.get_tag = function(peek) { //function to get a full tag and parse its type
                     var input_char = '',
                         content = [],
                         comment = '',
@@ -3462,7 +3475,7 @@ ace.define('html_beautify', ['require', 'exports', 'module'], function (require,
                     return content.join(''); //returns fully formatted tag
                 };
 
-                this.get_comment = function (start_pos) { //function to return comment content in its entirety
+                this.get_comment = function(start_pos) { //function to return comment content in its entirety
                     // this is will have very poor perf, but will work for now.
                     var comment = '',
                         delimiter = '>',
@@ -3519,7 +3532,7 @@ ace.define('html_beautify', ['require', 'exports', 'module'], function (require,
                     return comment;
                 };
 
-                this.get_unformatted = function (delimiter, orig_tag) { //function to return unformatted content in its entirety
+                this.get_unformatted = function(delimiter, orig_tag) { //function to return unformatted content in its entirety
 
                     if (orig_tag && orig_tag.toLowerCase().indexOf(delimiter) !== -1) {
                         return '';
@@ -3568,7 +3581,7 @@ ace.define('html_beautify', ['require', 'exports', 'module'], function (require,
                     return content;
                 };
 
-                this.get_token = function () { //initial handler for token-retrieval
+                this.get_token = function() { //initial handler for token-retrieval
                     var token;
 
                     if (this.last_token === 'TK_TAG_SCRIPT' || this.last_token === 'TK_TAG_STYLE') { //check if we need to format javascript
@@ -3601,7 +3614,7 @@ ace.define('html_beautify', ['require', 'exports', 'module'], function (require,
                     }
                 };
 
-                this.get_full_indent = function (level) {
+                this.get_full_indent = function(level) {
                     level = this.indent_level + level || 0;
                     if (level < 1) {
                         return '';
@@ -3610,7 +3623,7 @@ ace.define('html_beautify', ['require', 'exports', 'module'], function (require,
                     return Array(level + 1).join(this.indent_string);
                 };
 
-                this.is_unformatted = function (tag_check, unformatted) {
+                this.is_unformatted = function(tag_check, unformatted) {
                     //is this an HTML5 block-level link?
                     if (!this.Utils.in_array(tag_check, unformatted)) {
                         return false;
@@ -3638,7 +3651,7 @@ ace.define('html_beautify', ['require', 'exports', 'module'], function (require,
                     }
                 };
 
-                this.printer = function (js_source, indent_character, indent_size, wrap_line_length, brace_style) { //handles input/output and some other printing functions
+                this.printer = function(js_source, indent_character, indent_size, wrap_line_length, brace_style) { //handles input/output and some other printing functions
 
                     this.input = js_source || ''; //gets the input for the Parser
 
@@ -3658,7 +3671,7 @@ ace.define('html_beautify', ['require', 'exports', 'module'], function (require,
                         this.indent_string += this.indent_character;
                     }
 
-                    this.print_newline = function (force, arr) {
+                    this.print_newline = function(force, arr) {
                         this.line_char_count = 0;
                         if (!arr || !arr.length) {
                             return;
@@ -3671,14 +3684,14 @@ ace.define('html_beautify', ['require', 'exports', 'module'], function (require,
                         }
                     };
 
-                    this.print_indentation = function (arr) {
+                    this.print_indentation = function(arr) {
                         for (var i = 0; i < this.indent_level; i++) {
                             arr.push(this.indent_string);
                             this.line_char_count += this.indent_string.length;
                         }
                     };
 
-                    this.print_token = function (text) {
+                    this.print_token = function(text) {
                         // Avoid printing initial whitespace.
                         if (this.is_whitespace(text) && !this.output.length) {
                             return;
@@ -3692,7 +3705,7 @@ ace.define('html_beautify', ['require', 'exports', 'module'], function (require,
                         this.print_token_raw(text);
                     };
 
-                    this.print_token_raw = function (text) {
+                    this.print_token_raw = function(text) {
                         // If we are going to print newlines, truncate trailing
                         // whitespace, as the newlines will represent the space.
                         if (this.newlines > 0) {
@@ -3716,11 +3729,11 @@ ace.define('html_beautify', ['require', 'exports', 'module'], function (require,
                         this.newlines = 0;
                     };
 
-                    this.indent = function () {
+                    this.indent = function() {
                         this.indent_level++;
                     };
 
-                    this.unindent = function () {
+                    this.unindent = function() {
                         if (this.indent_level > 0) {
                             this.indent_level--;
                         }
@@ -3824,7 +3837,7 @@ ace.define('html_beautify', ['require', 'exports', 'module'], function (require,
                             if (_beautifier) {
 
                                 // call the Beautifier if avaliable
-                                var Child_options = function () {
+                                var Child_options = function() {
                                     this.eol = '\n';
                                 };
                                 Child_options.prototype = options;
@@ -3874,7 +3887,7 @@ ace.define('html_beautify', ['require', 'exports', 'module'], function (require,
         //#region custom for ace
         var js_beautify = require('js_beautify');
         var css_beautify = require('css_beautify');
-        exports.html_beautify = function (html_source, options) {
+        exports.html_beautify = function(html_source, options) {
             return style_html(html_source, options, js_beautify.js_beautify, css_beautify.css_beautify);
         };
         return;
@@ -3883,12 +3896,12 @@ ace.define('html_beautify', ['require', 'exports', 'module'], function (require,
 
         if (typeof define === "function" && define.amd) {
             // Add support for AMD ( https://github.com/amdjs/amdjs-api/wiki/AMD#defineamd-property- )
-            define(["require", "./beautify", "./beautify-css"], function (requireamd) {
+            define(["require", "./beautify", "./beautify-css"], function(requireamd) {
                 var js_beautify = requireamd("./beautify");
                 var css_beautify = requireamd("./beautify-css");
 
                 return {
-                    html_beautify: function (html_source, options) {
+                    html_beautify: function(html_source, options) {
                         return style_html(html_source, options, js_beautify.js_beautify, css_beautify.css_beautify);
                     }
                 };
@@ -3900,19 +3913,19 @@ ace.define('html_beautify', ['require', 'exports', 'module'], function (require,
             var js_beautify = require('./beautify.js');
             var css_beautify = require('./beautify-css.js');
 
-            exports.html_beautify = function (html_source, options) {
+            exports.html_beautify = function(html_source, options) {
                 return style_html(html_source, options, js_beautify.js_beautify, css_beautify.css_beautify);
             };
         }
         else if (typeof window !== "undefined") {
             // If we're running a web page and don't have either of the above, add our one global
-            window.html_beautify = function (html_source, options) {
+            window.html_beautify = function(html_source, options) {
                 return style_html(html_source, options, window.js_beautify, window.css_beautify);
             };
         }
         else if (typeof global !== "undefined") {
             // If we don't even have window, try global.
-            global.html_beautify = function (html_source, options) {
+            global.html_beautify = function(html_source, options) {
                 return style_html(html_source, options, global.js_beautify, global.css_beautify);
             };
         }
