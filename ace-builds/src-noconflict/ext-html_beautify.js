@@ -264,6 +264,7 @@ ace.define('ace/ext/html_beautify', ['require', 'exports', 'module', 'ace/range'
                 });
 
                 //quick hack: alternate beauitfy that does end expand (because end expand is always desired when beautifing minified file)
+                //UPDATE: currently not in use... (reverted default to end-expand)
                 this.commands.addCommand({
                     name: 'beautifyEndExpand',
                     bindKey: {
