@@ -33,7 +33,7 @@ ace.define('ace/ext/html_beautify', ['require', 'exports', 'module', 'ace/range'
         max_preserve_newlines: 3,
         break_chained_methods: false,
         indent_scripts: 'normal',
-        brace_style: 'collapse-preserve-inline' /*[collapse|collapse-preserve-inline|expand|end-expand|none]*/ ,
+        brace_style: 'end-expand' /*[collapse|collapse-preserve-inline|expand|end-expand|none]*/ ,
         unescape_strings: false,
         wrap_line_length: '0',
         space_after_anon_function: false,
