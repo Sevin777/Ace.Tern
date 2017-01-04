@@ -9,7 +9,7 @@ window.console = function() {
     postMessage({type: "log", data: msgs});
 };
 window.console.error =
-window.console.warn = 
+window.console.warn =
 window.console.log =
 window.console.trace = window.console;
 
@@ -20,7 +20,7 @@ window.onerror = function(message, file, line, col, err) {
     postMessage({type: "error", data: {
         message: message,
         file: file,
-        line: line, 
+        line: line,
         col: col,
         stack: err.stack
     }});
@@ -179,13 +179,13 @@ window.onmessage = function(e) {
         else
             throw new Error("Unknown command:" + msg.command);
     }
-    else if (msg.init) {        
+    else if (msg.init) {
         initBaseUrls(msg.tlns);
         require("ace/lib/es5-shim");
         sender = window.sender = initSender();
         var clazz = require(msg.module)[msg.classname];
         main = window.main = new clazz(sender);
-    } 
+    }
     else if (msg.event && sender) {
         sender._signal(msg.event, msg.data);
     }
@@ -267,30 +267,26 @@ exports.copyArray = function(array){
     for (var i=0, l=array.length; i<l; i++) {
         if (array[i] && typeof array[i] == "object")
             copy[i] = this.copyObject( array[i] );
-        else 
+        else
             copy[i] = array[i];
     }
     return copy;
 };
 
-exports.deepCopy = function deepCopy(obj) {
+exports.deepCopy = function (obj) {
     if (typeof obj !== "object" || !obj)
         return obj;
-    var copy;
-    if (Array.isArray(obj)) {
-        copy = [];
-        for (var key = 0; key < obj.length; key++) {
-            copy[key] = deepCopy(obj[key]);
-        }
-        return copy;
-    }
     var cons = obj.constructor;
     if (cons === RegExp)
         return obj;
     
-    copy = cons();
+    var copy = cons();
     for (var key in obj) {
-        copy[key] = deepCopy(obj[key]);
+        if (typeof obj[key] === "object") {
+            copy[key] = exports.deepCopy(obj[key]);
+        } else {
+            copy[key] = obj[key];
+        }
     }
     return copy;
 };
@@ -479,7 +475,7 @@ EventEmitter.setDefaultHandler = function(eventName, callback) {
             handlers._disabled_[eventName] = disabled = [];
         disabled.push(old);
         var i = disabled.indexOf(callback);
-        if (i != -1) 
+        if (i != -1)
             disabled.splice(i, 1);
     }
     handlers[eventName] = callback;
@@ -6802,7 +6798,7 @@ module.exports={
 		"Unexpected end tag ({name}). Expected end of file.",
 	"unexpected-end-table-in-caption":
 		"Unexpected end table tag in caption. Generates implied end caption.",
-	"end-html-in-innerhtml": 
+	"end-html-in-innerhtml":
 		"Unexpected html end tag in inner html mode.",
 	"eof-in-table":
 		"Unexpected end of file. Expected table content.",
@@ -10944,7 +10940,7 @@ if ([1,2].splice(0).length != 2) {
 
             var removed = this.slice(pos, pos+removeCount);
             var insert = slice.call(arguments, 2);
-            var add = insert.length;            
+            var add = insert.length;
             if (pos === length) {
                 if (add) {
                     this.push.apply(this, insert);
@@ -11533,6 +11529,7 @@ var toObject = function (o) {
 };
 
 });
+
 
 
 /**
@@ -20838,13 +20835,13 @@ function isUndefined(arg) {
 
 /**
  * Modificaitons:
- * changed: 
+ * changed:
  *      ace.define("ace/mode/javascript_worker" to ace.define("ace/mode/html_worker"
  * changed: (to match html worker syntax)
- *      var JavaScriptWorker = exports.Worker to var JavaScriptWorker = exports.JavaScriptWorker
+ *      var JavaScriptWorker = exports.JavaScriptWorker to var JavaScriptWorker = exports.Worker
  * changed: (to match html worker)
  *      this.sender.emit("annotate", errors); to this.sender.emit("error", errors);
- * 
+ *
  * added line inside of this.onUpdate: value = GetJsFromMixedHtml(value);
  *
  */
@@ -20998,7 +20995,7 @@ oop.inherits(JavaScriptWorker, Mirror);
 
 /**
  * custom method to extract javscript from html and keep line numbers
- * @param {string} s 
+ * @param {string} s
  * @param {bool} [debug] true to log debug info
  */
 function GetJsFromMixedHtml(s, debug) {
