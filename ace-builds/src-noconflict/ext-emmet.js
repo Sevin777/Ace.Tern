@@ -374,6 +374,7 @@ var SnippetManager = function() {
                     scope = "php";
             }
         }
+        
         return scope;
     };
 
@@ -385,7 +386,6 @@ var SnippetManager = function() {
             scopes.push.apply(scopes, snippetMap[scope].includeScopes);
         }
         scopes.push("_");
-    
         return scopes;
     };
 

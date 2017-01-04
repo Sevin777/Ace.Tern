@@ -1,101 +1,36 @@
-ace.define("ace/mode/abc_highlight_rules",["require","exports","module","ace/lib/oop","ace/mode/text_highlight_rules"], function (require, exports, module) {
-    "use strict";
+ace.define("ace/mode/mipsassembler_highlight_rules",["require","exports","module","ace/lib/oop","ace/mode/text_highlight_rules"], function(require, exports, module) {
+"use strict";
 
-    var oop = require("../lib/oop");
-    var TextHighlightRules = require("./text_highlight_rules").TextHighlightRules;
+var oop = require("../lib/oop");
+var TextHighlightRules = require("./text_highlight_rules").TextHighlightRules;
 
-    var ABCHighlightRules = function () {
+var mipsassemblerHighlightRules = function() {
 
-        this.$rules = {
-            start: [
-                {
-                    token: ['zupfnoter.information.comment.line.percentage', 'information.keyword', 'in formation.keyword.embedded'],
-                    regex: '(%%%%)(hn\\.[a-z]*)(.*)',
-                    comment: 'Instruction Comment'
-                },
-                {
-                    token: ['information.comment.line.percentage', 'information.keyword.embedded'],
-                    regex: '(%%)(.*)',
-                    comment: 'Instruction Comment'
-                },
+    this.$rules = {
+            start: [{
+                token: "string.start",
+                regex: '"',
+                next: "qstring"
+            }],
+            qstring: [{
+                token: "escape",
+                regex: /\\./,
+            }, {
+                token: "string.end",
+                regex: '"',
+                next: "start"
+            }],
+        }
+    
+    this.normalizeRules();
+};
 
-                {
-                    token: 'comment.line.percentage',
-                    regex: '%.*',
-                    comment: 'Comments'
-                },
-
-                {
-                    token: 'barline.keyword.operator',
-                    regex: '[\\[:]*[|:][|\\]:]*(?:\\[?[0-9]+)?|\\[[0-9]+',
-                    comment: 'Bar lines'
-                },
-                {
-                    token: ['information.keyword.embedded', 'information.argument.string.unquoted'],
-                    regex: '(\\[[A-Za-z]:)([^\\]]*\\])',
-                    comment: 'embedded Header lines'
-                },
-                {
-                    token: ['information.keyword', 'information.argument.string.unquoted'],
-                    regex: '^([A-Za-z]:)([^%\\\\]*)',
-                    comment: 'Header lines'
-                },
-                {
-                    token: ['text', 'entity.name.function', 'string.unquoted', 'text'],
-                    regex: '(\\[)([A-Z]:)(.*?)(\\])',
-                    comment: 'Inline fields'
-                },
-                {
-                    token: ['accent.constant.language', 'pitch.constant.numeric', 'duration.constant.numeric'],
-                    regex: '([\\^=_]*)([A-Ga-gz][,\']*)([0-9]*/*[><0-9]*)',
-                    comment: 'Notes'
-                },
-                {
-                    token: 'zupfnoter.jumptarget.string.quoted',
-                    regex: '[\\"!]\\^\\:.*?[\\"!]',
-                    comment: 'Zupfnoter jumptarget'
-                }, {
-                    token: 'zupfnoter.goto.string.quoted',
-                    regex: '[\\"!]\\^\\@.*?[\\"!]',
-                    comment: 'Zupfnoter goto'
-                },
-                {
-                    token: 'zupfnoter.annotation.string.quoted',
-                    regex: '[\\"!]\\^\\!.*?[\\"!]',
-                    comment: 'Zupfnoter annoation'
-                },
-                {
-                    token: 'zupfnoter.annotationref.string.quoted',
-                    regex: '[\\"!]\\^\\#.*?[\\"!]',
-                    comment: 'Zupfnoter annotation reference'
-                },
-                {
-                    token: 'chordname.string.quoted',
-                    regex: '[\\"!]\\^.*?[\\"!]',
-                    comment: 'abc chord'
-                },
-                {
-                    token: 'string.quoted',
-                    regex: '[\\"!].*?[\\"!]',
-                    comment: 'abc annotation'
-                }
-
-            ]
-        };
-
-        this.normalizeRules();
-    };
-
-    ABCHighlightRules.metaData = {
-        fileTypes: ['abc'],
-        name: 'ABC',
-        scopeName: 'text.abcnotation'
-    };
+mipsassemblerHighlightRules.metaData = 
 
 
-    oop.inherits(ABCHighlightRules, TextHighlightRules);
+oop.inherits(mipsassemblerHighlightRules, TextHighlightRules);
 
-    exports.ABCHighlightRules = ABCHighlightRules;
+exports.mipsassemblerHighlightRules = mipsassemblerHighlightRules;
 });
 
 ace.define("ace/mode/folding/cstyle",["require","exports","module","ace/lib/oop","ace/range","ace/mode/folding/fold_mode"], function(require, exports, module) {
@@ -239,23 +174,23 @@ oop.inherits(FoldMode, BaseFoldMode);
 
 });
 
-ace.define("ace/mode/abc",["require","exports","module","ace/lib/oop","ace/mode/text","ace/mode/abc_highlight_rules","ace/mode/folding/cstyle"], function (require, exports, module) {
-    "use strict";
+ace.define("ace/mode/mipsassembler",["require","exports","module","ace/lib/oop","ace/mode/text","ace/mode/mipsassembler_highlight_rules","ace/mode/folding/cstyle"], function(require, exports, module) {
+"use strict";
 
-    var oop = require("../lib/oop");
-    var TextMode = require("./text").Mode;
-    var ABCHighlightRules = require("./abc_highlight_rules").ABCHighlightRules;
-    var FoldMode = require("./folding/cstyle").FoldMode;
+var oop = require("../lib/oop");
+var TextMode = require("./text").Mode;
+var HighlightRules = require("./mipsassembler_highlight_rules").HighlightRules;
+var FoldMode = require("./folding/cstyle").FoldMode;
 
-    var Mode = function () {
-        this.HighlightRules = ABCHighlightRules;
-        this.foldingRules = new FoldMode();
-    };
-    oop.inherits(Mode, TextMode);
+var Mode = function() {
+    this.HighlightRules = HighlightRules;
+    this.foldingRules = new FoldMode();
+};
+oop.inherits(Mode, TextMode);
 
-    (function () {
-        this.$id = "ace/mode/abc"
-    }).call(Mode.prototype);
+(function() {
+    this.$id = "ace/mode/mipsassembler"
+}).call(Mode.prototype);
 
-    exports.Mode = Mode;
+exports.Mode = Mode;
 });

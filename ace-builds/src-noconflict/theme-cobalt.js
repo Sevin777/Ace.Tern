@@ -8,7 +8,7 @@ color: rgb(128,145,160)\
 }\
 .ace-cobalt .ace_print-margin {\
 width: 1px;\
-background: #555555\
+background: #011e3a\
 }\
 .ace-cobalt {\
 background-color: #002240;\
@@ -106,8 +106,7 @@ color: #9EFFFF\
 }\
 .ace-cobalt .ace_indent-guide {\
 background: url(data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAACCAYAAACZgbYnAAAAEklEQVQImWNgYGBgYHCLSvkPAAP3AgSDTRd4AAAAAElFTkSuQmCC) right repeat-y\
-}\
-";
+}";
 
 var dom = require("../lib/dom");
 dom.importCssString(exports.cssText, exports.cssClass);

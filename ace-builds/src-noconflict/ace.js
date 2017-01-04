@@ -1744,24 +1744,20 @@ exports.copyArray = function(array){
     return copy;
 };
 
-exports.deepCopy = function deepCopy(obj) {
+exports.deepCopy = function (obj) {
     if (typeof obj !== "object" || !obj)
         return obj;
-    var copy;
-    if (Array.isArray(obj)) {
-        copy = [];
-        for (var key = 0; key < obj.length; key++) {
-            copy[key] = deepCopy(obj[key]);
-        }
-        return copy;
-    }
     var cons = obj.constructor;
     if (cons === RegExp)
         return obj;
     
-    copy = cons();
+    var copy = cons();
     for (var key in obj) {
-        copy[key] = deepCopy(obj[key]);
+        if (typeof obj[key] === "object") {
+            copy[key] = exports.deepCopy(obj[key]);
+        } else {
+            copy[key] = obj[key];
+        }
     }
     return copy;
 };
@@ -9244,7 +9240,7 @@ var EditSession = function(text, mode) {
         TAB_SPACE = 12;
 
 
-    this.$computeWrapSplits = function(tokens, wrapLimit, tabSize) {
+    this.$computeWrapSplits = function(tokens, wrapLimit) {
         if (tokens.length == 0) {
             return [];
         }
@@ -9255,31 +9251,6 @@ var EditSession = function(text, mode) {
 
         var isCode = this.$wrapAsCode;
 
-        var indentedSoftWrap = this.$indentedSoftWrap;
-        var maxIndent = wrapLimit <= Math.max(2 * tabSize, 8)
-            || indentedSoftWrap === false ? 0 : Math.floor(wrapLimit / 2);
-
-        function getWrapIndent() {
-            var indentation = 0;
-            if (maxIndent === 0)
-                return indentation;
-            if (indentedSoftWrap) {
-                for (var i = 0; i < tokens.length; i++) {
-                    var token = tokens[i];
-                    if (token == SPACE)
-                        indentation += 1;
-                    else if (token == TAB)
-                        indentation += tabSize;
-                    else if (token == TAB_SPACE)
-                        continue;
-                    else
-                        break;
-                }
-            }
-            if (isCode && indentedSoftWrap !== false)
-                indentation += tabSize;
-            return Math.min(indentation, maxIndent);
-        }
         function addSplit(screenPos) {
             var displayed = tokens.slice(lastSplit, screenPos);
             var len = displayed.length;
@@ -9291,17 +9262,13 @@ var EditSession = function(text, mode) {
                     len -= 1;
                 });
 
-            if (!splits.length) {
-                indent = getWrapIndent();
-                splits.indent = indent;
-            }
             lastDocSplit += len;
             splits.push(lastDocSplit);
             lastSplit = screenPos;
         }
-        var indent = 0;
-        while (displayLength - lastSplit > wrapLimit - indent) {
-            var split = lastSplit + wrapLimit - indent;
+
+        while (displayLength - lastSplit > wrapLimit) {
+            var split = lastSplit + wrapLimit;
             if (tokens[split - 1] >= SPACE && tokens[split] >= SPACE) {
                 addSplit(split);
                 continue;
@@ -9328,7 +9295,7 @@ var EditSession = function(text, mode) {
                 addSplit(split);
                 continue;
             }
-            var minSplit = Math.max(split - (wrapLimit -(wrapLimit>>2)), lastSplit - 1);
+            var minSplit = Math.max(split - (isCode ? 10 : wrapLimit-(wrapLimit>>2)), lastSplit - 1);
             while (split > minSplit && tokens[split] < PLACEHOLDER_START) {
                 split --;
             }
@@ -9351,7 +9318,7 @@ var EditSession = function(text, mode) {
             split = lastSplit + wrapLimit;
             if (tokens[split] == CHAR_EXT)
                 split--;
-            addSplit(split - indent);
+            addSplit(split);
         }
         return splits;
     };
@@ -9427,16 +9394,6 @@ var EditSession = function(text, mode) {
             return this.$wrapData[row].length + 1;
         }
     };
-
-    this.getRowWrapIndent = function(screenRow) {
-        if (this.$useWrapMode) {
-            var pos = this.screenToDocumentPosition(screenRow, Number.MAX_VALUE);
-            var splits = this.$wrapData[pos.row];
-            return splits.length && splits[0] < pos.column ? splits.indent : 0;
-        } else {
-            return 0;
-        }
-    }
     this.getScreenLastRowColumn = function(screenRow) {
         var pos = this.screenToDocumentPosition(screenRow, Number.MAX_VALUE);
         return this.documentToScreenColumn(pos.row, pos.column);
@@ -9527,21 +9484,20 @@ var EditSession = function(text, mode) {
             line = this.getLine(docRow);
             foldLine = null;
         }
-        var wrapIndent = 0;
+
         if (this.$useWrapMode) {
             var splits = this.$wrapData[docRow];
             if (splits) {
                 var splitIndex = Math.floor(screenRow - row);
                 column = splits[splitIndex];
                 if(splitIndex > 0 && splits.length) {
-                    wrapIndent = splits.indent;
                     docColumn = splits[splitIndex - 1] || splits[splits.length - 1];
                     line = line.substring(docColumn);
                 }
             }
         }
 
-        docColumn += this.$getStringScreenWidth(line, screenColumn - wrapIndent)[1];
+        docColumn += this.$getStringScreenWidth(line, screenColumn)[1];
         if (this.$useWrapMode && docColumn >= column)
             docColumn = column - 1;
 
@@ -9613,7 +9569,6 @@ var EditSession = function(text, mode) {
             textLine = this.getLine(docRow).substring(0, docColumn);
             foldStartRow = docRow;
         }
-        var wrapIndent = 0;
         if (this.$useWrapMode) {
             var wrapRow = this.$wrapData[foldStartRow];
             if (wrapRow) {
@@ -9625,13 +9580,12 @@ var EditSession = function(text, mode) {
                 textLine = textLine.substring(
                     wrapRow[screenRowOffset - 1] || 0, textLine.length
                 );
-                wrapIndent = screenRowOffset > 0 ? wrapRow.indent : 0;
             }
         }
 
         return {
             row: screenRow,
-            column: wrapIndent + this.$getStringScreenWidth(textLine)[0]
+            column: this.$getStringScreenWidth(textLine)[0]
         };
     };
     this.documentToScreenColumn = function(row, docColumn) {
@@ -9776,7 +9730,6 @@ config.defineOptions(EditSession.prototype, "session", {
         },
         initialValue: "auto"
     },
-    indentedSoftWrap: { initialValue: true },
     firstLineNumber: {
         set: function() {this._signal("changeBreakpoint");},
         initialValue: 1
@@ -12948,7 +12901,6 @@ config.defineOptions(Editor.prototype, "editor", {
     useSoftTabs: "session",
     tabSize: "session",
     wrap: "session",
-    indentedSoftWrap: "session",
     foldStyle: "session",
     mode: "session"
 });
@@ -13353,22 +13305,20 @@ var Marker = function(parentEl) {
     };
     this.drawTextMarker = function(stringBuilder, range, clazz, layerConfig, extraStyle) {
         var row = range.start.row;
-        var session = this.session;
 
         var lineRange = new Range(
             row, range.start.column,
-            row, session.getScreenLastRowColumn(row)
+            row, this.session.getScreenLastRowColumn(row)
         );
         this.drawSingleLineMarker(stringBuilder, lineRange, clazz + " ace_start", layerConfig, 1, extraStyle);
         row = range.end.row;
-        lineRange = new Range(row, session.getRowWrapIndent(row), row, range.end.column);
+        lineRange = new Range(row, 0, row, range.end.column);
         this.drawSingleLineMarker(stringBuilder, lineRange, clazz, layerConfig, 0, extraStyle);
 
         for (row = range.start.row + 1; row < range.end.row; row++) {
             lineRange.start.row = row;
-            lineRange.start.column = session.getRowWrapIndent(row);
             lineRange.end.row = row;
-            lineRange.end.column = session.getScreenLastRowColumn(row);
+            lineRange.end.column = this.session.getScreenLastRowColumn(row);
             this.drawSingleLineMarker(stringBuilder, lineRange, clazz, layerConfig, 1, extraStyle);
         }
     };
@@ -13397,7 +13347,7 @@ var Marker = function(parentEl) {
             "left:", padding, "px;", extraStyle, "'></div>"
         );
         height = (range.end.row - range.start.row - 1) * config.lineHeight;
-        if (height <= 0)
+        if (height < 0)
             return;
         top = this.$getTop(range.start.row + 1, config);
 
@@ -13841,8 +13791,6 @@ var Text = function(parentEl) {
                             this.config.lineHeight, "px'>"
                         );
                     }
-
-                    stringBuilder.push(lang.stringRepeat("\xa0", splits.indent));
 
                     split ++;
                     screenColumn = 0;
@@ -16579,14 +16527,14 @@ function onMouseDown(e) {
     if (editor.$mouseHandler.$enableJumpToDef) {
         if (ctrl && alt || accel && alt)
             selectionMode = "add";
-        else if (alt && editor.$blockSelectEnabled)
+        else if (alt)
             selectionMode = "block";
     } else {
         if (accel && !alt) {
             selectionMode = "add";
             if (!isMultiSelect && shift)
                 return;
-        } else if (alt && editor.$blockSelectEnabled) {
+        } else if (alt) {
             selectionMode = "block";
         }
     }
@@ -17541,8 +17489,7 @@ function addAltCursorListeners(editor){
     var el = editor.textInput.getElement();
     var altCursor = false;
     event.addListener(el, "keydown", function(e) {
-        var altDown = e.keyCode == 18 && !(e.ctrlKey || e.shiftKey || e.metaKey);
-        if (editor.$blockSelectEnabled && altDown) {
+        if (e.keyCode == 18 && !(e.ctrlKey || e.shiftKey || e.metaKey)) {
             if (!altCursor) {
                 editor.renderer.setMouseCursor("crosshair");
                 altCursor = true;
@@ -17576,12 +17523,6 @@ require("./config").defineOptions(Editor.prototype, "editor", {
                 this.off("changeSession", this.$multiselectOnSessionChange);
                 this.off("mousedown", onMouseDown);
             }
-        },
-        value: true
-    },
-    enableBlockSelect: {
-        set: function(val) {
-            this.$blockSelectEnabled = val;
         },
         value: true
     }

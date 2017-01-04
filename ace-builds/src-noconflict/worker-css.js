@@ -273,24 +273,20 @@ exports.copyArray = function(array){
     return copy;
 };
 
-exports.deepCopy = function deepCopy(obj) {
+exports.deepCopy = function (obj) {
     if (typeof obj !== "object" || !obj)
         return obj;
-    var copy;
-    if (Array.isArray(obj)) {
-        copy = [];
-        for (var key = 0; key < obj.length; key++) {
-            copy[key] = deepCopy(obj[key]);
-        }
-        return copy;
-    }
     var cons = obj.constructor;
     if (cons === RegExp)
         return obj;
     
-    copy = cons();
+    var copy = cons();
     for (var key in obj) {
-        copy[key] = deepCopy(obj[key]);
+        if (typeof obj[key] === "object") {
+            copy[key] = exports.deepCopy(obj[key]);
+        } else {
+            copy[key] = obj[key];
+        }
     }
     return copy;
 };

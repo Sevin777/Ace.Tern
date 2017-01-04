@@ -374,6 +374,7 @@ var SnippetManager = function() {
                     scope = "php";
             }
         }
+        
         return scope;
     };
 
@@ -385,7 +386,6 @@ var SnippetManager = function() {
             scopes.push.apply(scopes, snippetMap[scope].includeScopes);
         }
         scopes.push("_");
-    
         return scopes;
     };
 
@@ -1056,13 +1056,6 @@ var AcePopup = function(parentNode) {
 
         var last = -1;
         var flag, c;
-        
-        if (data.iconClass)//show icon in popup if specified by completor
-            tokens.push({
-                type: data.iconClass,
-                value: " "
-            });
-            
         for (var i = 0; i < data.caption.length; i++) {
             c = data.caption[i];
             flag = data.matchMask & (1 << i) ? 1 : 0;
@@ -1835,11 +1828,8 @@ var loadSnippetsForMode = function(mode) {
     if (!snippetManager.files)
         snippetManager.files = {};
     loadSnippetFile(id);
-    if (mode.$modes) {
-        for (var m in mode.$modes) {
-            loadSnippetsForMode(mode.$modes[m]);
-        }
-    }
+    if (mode.modes)
+        mode.modes.forEach(loadSnippetsForMode);
 };
 
 var loadSnippetFile = function(id) {

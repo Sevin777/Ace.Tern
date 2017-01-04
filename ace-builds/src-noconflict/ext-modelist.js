@@ -138,7 +138,6 @@ var supportedModes = {
     Soy_Template:["soy"],
     Space:       ["space"],
     SQL:         ["sql"],
-    SQLServer:   ["sqlserver"],
     Stylus:      ["styl|stylus"],
     SVG:         ["svg"],
     Tcl:         ["tcl"],
