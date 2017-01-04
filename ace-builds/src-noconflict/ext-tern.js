@@ -243,6 +243,7 @@ var SnippetManager = function() {
         if (cursor.column < indentString.length)
             indentString = indentString.slice(0, cursor.column);
 
+        snippetText = snippetText.replace(/\r/g, "");
         var tokens = this.tokenizeTmSnippet(snippetText);
         tokens = this.resolveVariables(tokens, editor);
         tokens = tokens.map(function(x) {
@@ -320,9 +321,10 @@ var SnippetManager = function() {
         var text = "";
         tokens.forEach(function(t) {
             if (typeof t === "string") {
-                if (t[0] === "\n"){
-                    column = t.length - 1;
-                    row ++;
+                var lines = t.split("\n");
+                if (lines.length > 1){
+                    column = lines[lines.length - 1].length;
+                    row += lines.length - 1;
                 } else
                     column += t.length;
                 text += t;
@@ -374,6 +376,7 @@ var SnippetManager = function() {
                     scope = "php";
             }
         }
+        
         return scope;
     };
 
@@ -385,7 +388,6 @@ var SnippetManager = function() {
             scopes.push.apply(scopes, snippetMap[scope].includeScopes);
         }
         scopes.push("_");
-    
         return scopes;
     };
 
@@ -502,7 +504,10 @@ var SnippetManager = function() {
                     s.guard = "\\b";
                 s.trigger = lang.escapeRegExp(s.tabTrigger);
             }
-
+            
+            if (!s.trigger && !s.guard && !s.endTrigger && !s.endGuard)
+                return;
+            
             s.startRe = guardedRegexp(s.trigger, s.guard, true);
             s.triggerRe = new RegExp(s.trigger, "", true);
 
@@ -624,11 +629,11 @@ var TabstopManager = function(editor) {
         this.editor = null;
     };
 
-    this.onChange = function(e) {
-        var changeRange = e.data.range;
-        var isRemove = e.data.action[0] == "r";
-        var start = changeRange.start;
-        var end = changeRange.end;
+    this.onChange = function(delta) {
+        var changeRange = delta;
+        var isRemove = delta.action[0] == "r";
+        var start = delta.start;
+        var end = delta.end;
         var startRow = start.row;
         var endRow = end.row;
         var lineDif = endRow - startRow;
@@ -945,10 +950,9 @@ ace.define("ace/autocomplete/text_completer",["require","exports","module","ace/
     };
 });
 
-ace.define("ace/autocomplete/popup",["require","exports","module","ace/edit_session","ace/virtual_renderer","ace/editor","ace/range","ace/lib/event","ace/lib/lang","ace/lib/dom"], function(require, exports, module) {
+ace.define("ace/autocomplete/popup",["require","exports","module","ace/virtual_renderer","ace/editor","ace/range","ace/lib/event","ace/lib/lang","ace/lib/dom"], function(require, exports, module) {
 "use strict";
 
-var EditSession = require("../edit_session").EditSession;
 var Renderer = require("../virtual_renderer").VirtualRenderer;
 var Editor = require("../editor").Editor;
 var Range = require("../range").Range;
@@ -1106,7 +1110,7 @@ var AcePopup = function(parentNode) {
                 type: data.iconClass,
                 value: " "
             });
-            
+        
         for (var i = 0; i < data.caption.length; i++) {
             c = data.caption[i];
             flag = data.matchMask & (1 << i) ? 1 : 0;
@@ -1141,8 +1145,8 @@ var AcePopup = function(parentNode) {
 
     popup.data = [];
     popup.setData = function(list) {
-        popup.data = list || [];
         popup.setValue(lang.stringRepeat("\n", list.length), -1);
+        popup.data = list || [];
         popup.setRow(0);
     };
     popup.getData = function(row) {
@@ -1153,7 +1157,7 @@ var AcePopup = function(parentNode) {
         return selectionMarker.start.row;
     };
     popup.setRow = function(line) {
-        line = Math.max(-1, Math.min(this.data.length, line));
+        line = Math.max(0, Math.min(this.data.length, line));
         if (selectionMarker.start.row != line) {
             popup.selection.clearSelection();
             selectionMarker.start.row = selectionMarker.end.row = line || 0;
@@ -1182,12 +1186,15 @@ var AcePopup = function(parentNode) {
         var renderer = this.renderer;
         var maxH = renderer.$maxLines * lineHeight * 1.4;
         var top = pos.top + this.$borderSize;
-        if (top + maxH > screenHeight - lineHeight && !topdownOnly) {
+        var allowTopdown = top > screenHeight / 2 && !topdownOnly;
+        if (allowTopdown && top + lineHeight + maxH > screenHeight) {
+            renderer.$maxPixelHeight = top - 2 * this.$borderSize;
             el.style.top = "";
             el.style.bottom = screenHeight - top + "px";
             popup.isTopdown = false;
         } else {
             top += lineHeight;
+            renderer.$maxPixelHeight = screenHeight - top - 0.2 * lineHeight;
             el.style.top = top + "px";
             el.style.bottom = "";
             popup.isTopdown = true;
@@ -1306,6 +1313,21 @@ exports.retrieveFollowingIdentifier = function(text, pos, regex) {
     return buf;
 };
 
+exports.getCompletionPrefix = function (editor) {
+    var pos = editor.getCursorPosition();
+    var line = editor.session.getLine(pos.row);
+    var prefix;
+    editor.completers.forEach(function(completer) {
+        if (completer.identifierRegexps) {
+            completer.identifierRegexps.forEach(function(identifierRegex) {
+                if (!prefix && identifierRegex)
+                    prefix = this.retrievePrecedingIdentifier(line, pos.column, identifierRegex);
+            }.bind(this));
+        }
+    }.bind(this));
+    return prefix || this.retrievePrecedingIdentifier(line, pos.column);
+};
+
 });
 
 ace.define("ace/autocomplete",["require","exports","module","ace/keyboard/hash_handler","ace/autocomplete/popup","ace/autocomplete/util","ace/lib/event","ace/lib/lang","ace/lib/dom","ace/snippets"], function(require, exports, module) {
@@ -1380,7 +1402,7 @@ var Autocomplete = function() {
             var rect = editor.container.getBoundingClientRect();
             pos.top += rect.top - renderer.layerConfig.offset;
             pos.left += rect.left - editor.renderer.scrollLeft;
-            pos.left += renderer.$gutterLayer.gutterWidth;
+            pos.left += renderer.gutterWidth;
 
             this.popup.show(pos, lineHeight);
         } else if (keepPopupPosition && !prefix) {
@@ -1419,11 +1441,15 @@ var Autocomplete = function() {
     };
 
     this.blurListener = function(e) {
+        if (e.relatedTarget && e.relatedTarget.nodeName == "A" && e.relatedTarget.href) {
+            window.open(e.relatedTarget.href, "_blank");
+        }
         var el = document.activeElement;
-        var text = this.editor.textInput.getElement()
-        if (el != text && ( !this.popup || el.parentNode != this.popup.container )
-            && el != this.tooltipNode && e.relatedTarget != this.tooltipNode
-            && e.relatedTarget != text
+        var text = this.editor.textInput.getElement();
+        var fromTooltip = e.relatedTarget && e.relatedTarget == this.tooltipNode;
+        var container = this.popup && this.popup.container;
+        if (el != text && el.parentNode != container && !fromTooltip
+            && el != this.tooltipNode && e.relatedTarget != text
         ) {
             this.detach();
         }
@@ -1451,7 +1477,7 @@ var Autocomplete = function() {
         this.popup.setRow(row);
     };
 
-    this.insertMatch = function(data) {
+    this.insertMatch = function(data, options) {
         if (!data)
             data = this.popup.getData(this.popup.getRow());
         if (!data)
@@ -1484,7 +1510,7 @@ var Autocomplete = function() {
 
         "Esc": function(editor) { editor.completer.detach(); },
         "Return": function(editor) { return editor.completer.insertMatch(); },
-        "Shift-Return": function(editor) { editor.completer.insertMatch(true); },
+        "Shift-Return": function(editor) { editor.completer.insertMatch(null, {deleteSuffix: true}); },
         "Tab": function(editor) {
             var result = editor.completer.insertMatch();
             if (!result && !editor.tabstopManager)
@@ -1502,7 +1528,7 @@ var Autocomplete = function() {
         var pos = editor.getCursorPosition();
 
         var line = session.getLine(pos.row);
-        var prefix = util.retrievePrecedingIdentifier(line, pos.column);
+        var prefix = util.getCompletionPrefix(editor);
 
         this.base = session.doc.createAnchor(pos.row, pos.column - prefix.length);
         this.base.$insertRight = true;
@@ -1511,12 +1537,12 @@ var Autocomplete = function() {
         var total = editor.completers.length;
         editor.completers.forEach(function(completer, i) {
             completer.getCompletions(editor, session, pos, prefix, function(err, results) {
-                if (!err)
+                if (!err && results)
                     matches = matches.concat(results);
                 var pos = editor.getCursorPosition();
                 var line = session.getLine(pos.row);
                 callback(null, {
-                    prefix: util.retrievePrecedingIdentifier(line, pos.column, results[0] && results[0].identifierRegex),
+                    prefix: prefix,
                     matches: matches,
                     finished: (--total === 0)
                 });
@@ -1615,7 +1641,7 @@ var Autocomplete = function() {
             doc = selected;
 
         if (typeof doc == "string")
-            doc = {docText: doc}
+            doc = {docText: doc};
         if (!doc || !(doc.docHTML || doc.docText))
             return this.hideDocTooltip();
         this.showDocTooltip(doc);
@@ -1681,7 +1707,7 @@ Autocomplete.startCommand = {
     bindKey: "Ctrl-Space|Ctrl-Shift-Space|Alt-Space"
 };
 
-var FilteredList = function(array, filterText, mutateData) {
+var FilteredList = function(array, filterText) {
     this.all = array;
     this.filtered = array;
     this.filterText = filterText || "";
@@ -3530,14 +3556,9 @@ ace.define("ace/tern/tern_server",["require","exports","module","ace/range","ace
     }
     function trackChange(ts, doc, change) {
         var _change = {};
-        _change.from = toTernLoc(change.data.range.start);
-        _change.to = toTernLoc(change.data.range.end);
-        if (change.data.hasOwnProperty('text')) {
-            _change.text = [change.data.text];
-        }
-        else { //text not set when multiple lines changed, instead lines is set as array
-            _change.text = change.data.lines;
-        }
+        _change.from = toTernLoc(change.start);
+        _change.to = toTernLoc(change.end);
+        _change.text = change.lines;
 
         var data = findDoc(ts, doc);
         var argHints = ts.cachedArgHints;
@@ -3766,57 +3787,71 @@ ace.define("ace/tern/tern_server",["require","exports","module","ace/range","ace
 
 });
 
-ace.define("ace/tern/tern",["require","exports","module","ace/config","ace/snippets","ace/autocomplete/text_completer","ace/autocomplete","ace/tern/tern_server","ace/editor"], function (require, exports, module) {
+ace.define("ace/tern/tern",["require","exports","module","ace/config","ace/lib/lang","ace/snippets","ace/autocomplete/text_completer","ace/autocomplete","ace/tern/tern_server","ace/editor"], function(require, exports, module) {
     "use strict";
     var config = require("../config");
+    var lang = require("../lib/lang");
     var snippetManager = require("../snippets").snippetManager;
     var snippetCompleter = {
-        getCompletions: function (editor, session, pos, prefix, callback) {
+        getCompletions: function(editor, session, pos, prefix, callback) {
             var snippetMap = snippetManager.snippetMap;
             var completions = [];
-            snippetManager.getActiveScopes(editor).forEach(function (scope) {
+            snippetManager.getActiveScopes(editor).forEach(function(scope) {
                 var snippets = snippetMap[scope] || [];
                 for (var i = snippets.length; i--;) {
                     var s = snippets[i];
                     var caption = s.name || s.tabTrigger;
-                    if (!caption) continue;
+                    if (!caption)
+                        continue;
                     completions.push({
                         caption: caption,
                         snippet: s.content,
-                        meta: s.tabTrigger && !s.name ? s.tabTrigger + "\u21E5 " : "snippet"
+                        meta: s.tabTrigger && !s.name ? s.tabTrigger + "\u21E5 " : "snippet",
+                        type: "snippet"
                     });
                 }
             }, this);
             callback(null, completions);
+        },
+        getDocTooltip: function(item) {
+            if (item.type == "snippet" && !item.docHTML) {
+                item.docHTML = [
+                    "<b>", lang.escapeHTML(item.caption), "</b>", "<hr></hr>",
+                    lang.escapeHTML(item.snippet)
+                ].join("");
+            }
         }
     };
     var textCompleter = require("../autocomplete/text_completer");
     var keyWordCompleter = {
-        getCompletions: function (editor, session, pos, prefix, callback) {
+        getCompletions: function(editor, session, pos, prefix, callback) {
+            if (session.$mode.completer) {
+                return session.$mode.completer.getCompletions(editor, session, pos, prefix, callback);
+            }
             var state = editor.session.getState(pos.row);
             var completions = session.$mode.getCompletions(state, session, pos, prefix);
             callback(null, completions);
         }
     };
     var completers = [snippetCompleter, textCompleter, keyWordCompleter];
-    exports.setCompleters = function (val) {
+    exports.setCompleters = function(val) {
         completers = val || [];
     };
 
-    exports.addCompleter = function (completer) {
+    exports.addCompleter = function(completer) {
         completers.push(completer);
     };
 
     var expandSnippet = {
         name: "expandSnippet",
-        exec: function (editor) {
+        exec: function(editor) {
             var success = snippetManager.expandWithTab(editor);
-            if (!success) editor.execCommand("indent");
+            if (!success) editor.execCommand("indent"); //note: not sure if this line was added by morgan and if its still relevant..
         },
         bindKey: "tab"
     };
 
-    var loadSnippetsForMode = function (mode) {
+    var loadSnippetsForMode = function(mode) {
         var id = mode.$id;
         if (!snippetManager.files)
             snippetManager.files = {};
@@ -3828,12 +3863,12 @@ ace.define("ace/tern/tern",["require","exports","module","ace/config","ace/snipp
         }
     };
 
-    var loadSnippetFile = function (id) {
+    var loadSnippetFile = function(id) {
         if (!id || snippetManager.files[id])
             return;
         var snippetFilePath = id.replace("mode", "snippets");
         snippetManager.files[id] = {};
-        config.loadModule(snippetFilePath, function (m) {
+        config.loadModule(snippetFilePath, function(m) {
             if (m) {
                 snippetManager.files[id] = m;
                 if (!m.snippets && m.snippetText)
@@ -3841,7 +3876,7 @@ ace.define("ace/tern/tern",["require","exports","module","ace/config","ace/snipp
                 snippetManager.register(m.snippets || [], m.scope);
                 if (m.includeScopes) {
                     snippetManager.snippetMap[m.scope].includeScopes = m.includeScopes;
-                    m.includeScopes.forEach(function (x) {
+                    m.includeScopes.forEach(function(x) {
                         loadSnippetFile("ace/mode/" + x);
                     });
                 }
@@ -3853,9 +3888,9 @@ ace.define("ace/tern/tern",["require","exports","module","ace/config","ace/snipp
         var pos = editor.getCursorPosition();
         var line = editor.session.getLine(pos.row);
         var prefix;
-        editor.completers.forEach(function (completer) {
+        editor.completers.forEach(function(completer) {
             if (completer.identifierRegexps) {
-                completer.identifierRegexps.forEach(function (identifierRegex) {
+                completer.identifierRegexps.forEach(function(identifierRegex) {
                     if (!prefix && identifierRegex)
                         prefix = util.retrievePrecedingIdentifier(line, pos.column, identifierRegex);
                 });
@@ -3864,7 +3899,7 @@ ace.define("ace/tern/tern",["require","exports","module","ace/config","ace/snipp
         return prefix || util.retrievePrecedingIdentifier(line, pos.column);
     }
 
-    var doLiveAutocomplete = function (e) {
+    var doLiveAutocomplete = function(e) {
         var editor = e.editor;
         var text = e.args || "";
         var hasCompleter = editor.completer && editor.completer.activated;
@@ -3886,7 +3921,7 @@ ace.define("ace/tern/tern",["require","exports","module","ace/config","ace/snipp
     var Autocomplete = require("../autocomplete").Autocomplete;
     Autocomplete.startCommand = {
         name: "startAutocomplete",
-        exec: function (editor, e) {
+        exec: function(editor, e) {
             if (!editor.completer) {
                 editor.completer = new Autocomplete();
             }
@@ -3916,14 +3951,14 @@ ace.define("ace/tern/tern",["require","exports","module","ace/config","ace/snipp
         },
         bindKey: "Ctrl-Space|Ctrl-Shift-Space|Alt-Space"
     };
-    var onChangeMode = function (e, editor) {
+    var onChangeMode = function(e, editor) {
         loadSnippetsForMode(editor.session.$mode);
     };
     var ternOptions = {};
 
     var TernServer = require("./tern_server").TernServer;
     var aceTs;
-    var createTernServer = function (cb) {
+    var createTernServer = function(cb) {
         var src = ternOptions.workerScript || config.moduleUrl('worker/tern');
         if (ternOptions.useWorker === false) {
             var id = 'ace_tern_files';
@@ -3946,13 +3981,13 @@ ace.define("ace/tern/tern",["require","exports","module","ace/config","ace/snipp
     };
     var editor_for_OnCusorChange = null;
     var debounceArgHints;
-    var onCursorChange_Tern = function (e, editor_getSession_selection) {
+    var onCursorChange_Tern = function(e, editor_getSession_selection) {
         clearTimeout(debounceArgHints);
-        debounceArgHints = setTimeout(function () {
+        debounceArgHints = setTimeout(function() {
             editor_for_OnCusorChange.ternServer.updateArgHints(editor_for_OnCusorChange);
         }, 10);
     };
-    var onAfterExec_Tern = function (e, commandManager) {
+    var onAfterExec_Tern = function(e, commandManager) {
         if (e.command.name === "insertstring" && e.args === ".") {
             if (e.editor.ternServer && e.editor.ternServer.enabledAtCurrentLocation(e.editor)) {
                 var pos = e.editor.getSelectionRange().end;
@@ -3976,7 +4011,7 @@ ace.define("ace/tern/tern",["require","exports","module","ace/config","ace/snipp
     var Editor = require("../editor").Editor;
     config.defineOptions(Editor.prototype, "editor", {
         enableTern: {
-            set: function (val) {
+            set: function(val) {
                 var self = this;
                 if (typeof val === 'object') {
                     ternOptions = val;
@@ -3984,7 +4019,7 @@ ace.define("ace/tern/tern",["require","exports","module","ace/config","ace/snipp
                 }
                 if (val) {
                     editor_for_OnCusorChange = self; //hack
-                    createTernServer(function () {
+                    createTernServer(function() {
                         self.completers = completers;
                         self.ternServer = aceTs;
                         self.commands.addCommand(Autocomplete.startCommand);
@@ -4006,7 +4041,7 @@ ace.define("ace/tern/tern",["require","exports","module","ace/config","ace/snipp
             value: false
         },
         enableBasicAutocompletion: {
-            set: function (val) {
+            set: function(val) {
                 if (val) {
                     this.completers = completers;
                     this.commands.addCommand(Autocomplete.startCommand);
@@ -4020,7 +4055,7 @@ ace.define("ace/tern/tern",["require","exports","module","ace/config","ace/snipp
             value: false
         },
         enableSnippets: {
-            set: function (val) {
+            set: function(val) {
                 if (val) {
                     this.commands.addCommand(expandSnippet);
                     this.on("changeMode", onChangeMode);

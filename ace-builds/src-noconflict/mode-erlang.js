@@ -472,7 +472,7 @@ var ErlangHighlightRules = function() {
               'punctuation.definition.parameters.end.erlang',
               'meta.directive.ifdef.erlang',
               'punctuation.section.directive.end.erlang' ],
-           regex: '^(\\s*)(-)(\\s*)(ifdef)(\\s*)(\\()(\\s*)([a-zA-z\\d@_]+)(\\s*)(\\))(\\s*)(\\.)' },
+           regex: '^(\\s*)(-)(\\s*)(ifdef)(\\s*)(\\()(\\s*)([a-zA-Z\\d@_]+)(\\s*)(\\))(\\s*)(\\.)' },
          { token: 
             [ 'meta.directive.ifndef.erlang',
               'punctuation.section.directive.begin.erlang',
@@ -486,7 +486,7 @@ var ErlangHighlightRules = function() {
               'punctuation.definition.parameters.end.erlang',
               'meta.directive.ifndef.erlang',
               'punctuation.section.directive.end.erlang' ],
-           regex: '^(\\s*)(-)(\\s*)(ifndef)(\\s*)(\\()(\\s*)([a-zA-z\\d@_]+)(\\s*)(\\))(\\s*)(\\.)' },
+           regex: '^(\\s*)(-)(\\s*)(ifndef)(\\s*)(\\()(\\s*)([a-zA-Z\\d@_]+)(\\s*)(\\))(\\s*)(\\.)' },
          { token: 
             [ 'meta.directive.undef.erlang',
               'punctuation.section.directive.begin.erlang',
@@ -500,7 +500,7 @@ var ErlangHighlightRules = function() {
               'punctuation.definition.parameters.end.erlang',
               'meta.directive.undef.erlang',
               'punctuation.section.directive.end.erlang' ],
-           regex: '^(\\s*)(-)(\\s*)(undef)(\\s*)(\\()(\\s*)([a-zA-z\\d@_]+)(\\s*)(\\))(\\s*)(\\.)' } ],
+           regex: '^(\\s*)(-)(\\s*)(undef)(\\s*)(\\()(\\s*)([a-zA-Z\\d@_]+)(\\s*)(\\))(\\s*)(\\.)' } ],
       '#macro-usage': 
        [ { token: 
             [ 'keyword.operator.macro.erlang',
@@ -862,7 +862,7 @@ oop.inherits(FoldMode, BaseFoldMode);
     this.foldingStopMarker = /^[^\[\{]*(\}|\])|^[\s\*]*(\*\/)/;
     this.singleLineBlockCommentRe= /^\s*(\/\*).*\*\/\s*$/;
     this.tripleStarBlockCommentRe = /^\s*(\/\*\*\*).*\*\/\s*$/;
-    this.startRegionRe = /^\s*(\/\*|\/\/)#region\b/;
+    this.startRegionRe = /^\s*(\/\*|\/\/)#?region\b/;
     this._getFoldWidgetBase = this.getFoldWidget;
     this.getFoldWidget = function(session, foldStyle, row) {
         var line = session.getLine(row);
@@ -950,13 +950,12 @@ oop.inherits(FoldMode, BaseFoldMode);
         
         return new Range(startRow, startColumn, endRow, session.getLine(endRow).length);
     };
-    
     this.getCommentRegionBlock = function(session, line, row) {
         var startColumn = line.search(/\s*$/);
         var maxRow = session.getLength();
         var startRow = row;
         
-        var re = /^\s*(?:\/\*|\/\/)#(end)?region\b/;
+        var re = /^\s*(?:\/\*|\/\/|--)#?(end)?region\b/;
         var depth = 1;
         while (++row < maxRow) {
             line = session.getLine(row);
@@ -989,12 +988,13 @@ var FoldMode = require("./folding/cstyle").FoldMode;
 var Mode = function() {
     this.HighlightRules = ErlangHighlightRules;
     this.foldingRules = new FoldMode();
+    this.$behaviour = this.$defaultBehaviour;
 };
 oop.inherits(Mode, TextMode);
 
 (function() {
     this.lineCommentStart = "%";
-    this.blockComment = {start: "/*", end: "*/"};
+    this.blockComment = null;
     this.$id = "ace/mode/erlang";
 }).call(Mode.prototype);
 
