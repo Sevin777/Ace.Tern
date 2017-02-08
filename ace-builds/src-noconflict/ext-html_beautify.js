@@ -1,3 +1,4 @@
+/*jshint maxerr:10000, eqnull:true */
 /**
  * HTML beautify by Morgan Yarbrough
  * This was made as a quick hack by working with the ace builds repo.
@@ -22,6 +23,34 @@ ace.define('ace/ext/html_beautify', ['require', 'exports', 'module', 'ace/range'
         html_beautify: require('html_beautify').html_beautify,
         js_beautify: require('js_beautify').js_beautify,
     };
+
+
+    /**
+     * @returns {bool} true if window.debugBeautify is true (allows enabling debug via console)
+     */
+    function d() {
+        try {
+            if (window.debugBeautify) {
+                if (!window.beautifiers) { //if debug, set global var once for accessing this
+                    window.beautifiers = beautifiers;
+                    console.info('use window.beautifiers to test beautifer execution');
+                }
+                return true;
+            }
+        }
+        catch (ex) {
+            console.log('error getting debug for html beautifer');
+        }
+        return false;
+    }
+    try {
+        if (!window.debugBeautify) window.debugBeautify = false; //set once so that console intellisense can pickup
+        console.info('%c set window.debugBeautify=true; to debug beautifer (built into ace via custom extension)', 'color:#2B64A7;');
+    }
+    catch (ex) {
+        console.log('non-critial error in trying to setup debugging', ex);
+    }
+
 
     /**
      * beautify options. Export to allow modifying options
@@ -96,7 +125,6 @@ ace.define('ace/ext/html_beautify', ['require', 'exports', 'module', 'ace/range'
         var sel = editor.selection;
         var session = editor.session;
         var range = sel.getRange();
-
         //if nothing is selected, then select all
         var formatAll = false;
         var originalRangeStart = editor.selection.getRange().start;
@@ -112,6 +140,8 @@ ace.define('ace/ext/html_beautify', ['require', 'exports', 'module', 'ace/range'
 
 
         //#region beautify options
+        var trim = false;
+        var indent;
         var options = clone(exports.options);
 
         if (!removeBlanks) {
@@ -124,9 +154,8 @@ ace.define('ace/ext/html_beautify', ['require', 'exports', 'module', 'ace/range'
                 options.indent_size = 1;
             }
             var line = session.getLine(range.start.row);
-            var indent = line.match(/^\s*/)[0];
+            indent = line.match(/^\s*/)[0];
 
-            var trim = false;
             if (range.start.column < indent.length) range.start.column = 0;
             else trim = true;
         }
@@ -139,11 +168,13 @@ ace.define('ace/ext/html_beautify', ['require', 'exports', 'module', 'ace/range'
         //#endregion
 
 
-        //#region set mode
+        //#region get value, set mode
         var value = session.getTextRange(range);
+        var originalValue = value; //for debugging
         var type = null;
+        var detectedMode;
         if (!removeBlanks) {
-            var detectedMode = getCurrentMode(editor, false);
+            detectedMode = getCurrentMode(editor, false);
 
             //for html, allow using a nested formatter if the entire range is nested (css and javascript only)
             if (detectedMode == "html") {
@@ -171,16 +202,36 @@ ace.define('ace/ext/html_beautify', ['require', 'exports', 'module', 'ace/range'
 
 
         //#region execute beautify
+        var standardNewLineChar = '\n',
+            editorNewLineChar = session.doc.getNewLineCharacter(),
+            needToNormalize = standardNewLineChar != editorNewLineChar;
         try {
             if (removeBlanks) {
                 value = value.replace(/\s+/g, " ").trim();
             }
             else {
-                //console.log('executing beautifier: ' + type, '\n function:', beautifiers[type + "_beautify"], '\n options:', options /*, '\n value:',value,*/ );
-
                 value = beautifiers[type + "_beautify"](value, options);
-                if (trim) value = value.replace(/^/gm, indent).trim();
-                if (range.end.column === 0) value += "\n" + indent;
+
+                if (d()) {
+                    console.log('executed beautifier: ' + type, '\n function:', beautifiers[type + "_beautify"], '\n options:', options, '\n originalValue:\n', originalValue, '\n new value:\n', value, '\n originalValue-whitespace:\n', showWhiteSpace(originalValue), '\n new value-whitespace:\n', showWhiteSpace(value));
+                }
+
+
+                if (trim) {
+                    //PROBLEM: the replacment below that adds indent to start of each line does not work properly if newline char is \r\n. Solution is to normalize line breaks (convert to \n), then convert back after the replacment
+                    if (needToNormalize) value = value.replace(new RegExp(editorNewLineChar, 'g'), standardNewLineChar);
+
+                    value = value.replace(/^/gm, indent).trim(); //add indentation back to start of each line
+
+                    if (needToNormalize) value = value.replace(new RegExp(standardNewLineChar, 'g'), editorNewLineChar);
+
+                    if (d()) console.log('trimmed value:\n', showWhiteSpace(value), '\nindent:\n', showWhiteSpace(indent));
+                }
+                if (range.end.column === 0) {
+                    value += editorNewLineChar + indent;
+                    if (d()) console.log('indented value:\n', showWhiteSpace(value));
+                }
+
             }
         }
         catch (ex) {
@@ -241,6 +292,26 @@ ace.define('ace/ext/html_beautify', ['require', 'exports', 'module', 'ace/range'
         }
     }
 
+    /**
+     * for debugging: transforms whitespace characters (line breaks, tabs, and 2 or more concurrent spaces) into characters that can be read
+     */
+    function showWhiteSpace(s) {
+        if (s == null) return s;
+
+        if (s == " ") {
+            //special case: if string is exactly one space, then convert it to a value that shows us this
+            return "[1space]";
+        }
+
+        //note: order of replacments is important
+        s = s.replace(new RegExp("\r\n", 'g'), "[/r/n]");
+        s = s.replace(new RegExp("\r", 'g'), "[/r]"); //there can be a standalone /r
+        s = s.replace(new RegExp("\n", 'g'), "[/n]");
+        s = s.replace(new RegExp("\t", 'g'), "[/t]");
+        s = s.replace(new RegExp("  ", 'g'), "[2space]");
+        return s;
+    }
+    
 
     config.defineOptions(Editor.prototype, "editor", {
         autoBeautify: {
